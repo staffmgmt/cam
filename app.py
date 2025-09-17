@@ -5,6 +5,9 @@ from pathlib import Path
 import traceback
 import time
 import array
+import subprocess
+import json
+from typing import Any, Dict, List
 from metrics import metrics as _metrics_singleton, Metrics
 from config import config
 from voice_processor import voice_processor
@@ -94,6 +97,101 @@ async def video_ws(websocket: WebSocket):
 @app.get("/metrics")
 async def get_metrics():
     return metrics.snapshot()
+
+
+@app.get("/gpu")
+async def gpu_info():
+    """Return basic GPU availability and memory statistics.
+
+    Priority order:
+    1. torch (if installed and CUDA available) for detailed stats per device.
+    2. nvidia-smi (if executable present) for name/total/used.
+    3. Fallback: available false.
+    """
+    # Response scaffold
+    resp: Dict[str, Any] = {
+        "available": False,
+        "provider": None,
+        "device_count": 0,
+        "devices": [],  # type: ignore[list-item]
+    }
+
+    # Try torch first (lazy import)
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            resp["available"] = True
+            resp["provider"] = "torch"
+            count = torch.cuda.device_count()
+            resp["device_count"] = count
+            devices: List[Dict[str, Any]] = []
+            for idx in range(count):
+                name = torch.cuda.get_device_name(idx)
+                try:
+                    free_bytes, total_bytes = torch.cuda.mem_get_info(idx)  # type: ignore[arg-type]
+                except TypeError:
+                    # Older PyTorch versions take no index
+                    free_bytes, total_bytes = torch.cuda.mem_get_info()
+                allocated = torch.cuda.memory_allocated(idx)
+                reserved = torch.cuda.memory_reserved(idx)
+                # Estimate free including unallocated reserved as reclaimable
+                est_free = free_bytes + max(reserved - allocated, 0)
+                to_mb = lambda b: round(b / (1024 * 1024), 2)
+                devices.append({
+                    "index": idx,
+                    "name": name,
+                    "total_mb": to_mb(total_bytes),
+                    "allocated_mb": to_mb(allocated),
+                    "reserved_mb": to_mb(reserved),
+                    "free_mem_get_info_mb": to_mb(free_bytes),
+                    "free_estimate_mb": to_mb(est_free),
+                })
+            resp["devices"] = devices
+            return resp
+    except Exception:  # noqa: BLE001
+        # Torch not installed or failed; fall through to nvidia-smi
+        pass
+
+    # Try nvidia-smi fallback
+    try:
+        cmd = [
+            "nvidia-smi",
+            "--query-gpu=name,memory.total,memory.used",
+            "--format=csv,noheader,nounits",
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=2).decode("utf-8").strip()
+        lines = [l for l in out.splitlines() if l.strip()]
+        if lines:
+            resp["available"] = True
+            resp["provider"] = "nvidia-smi"
+            resp["device_count"] = len(lines)
+            devices: List[Dict[str, Any]] = []
+            for idx, line in enumerate(lines):
+                # Expect: name, total, used
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 3:
+                    name, total_str, used_str = parts[:3]
+                    try:
+                        total = float(total_str)
+                        used = float(used_str)
+                        free = max(total - used, 0)
+                    except ValueError:
+                        total = used = free = 0.0
+                    devices.append({
+                        "index": idx,
+                        "name": name,
+                        "total_mb": total,
+                        "allocated_mb": used,  # approximate
+                        "reserved_mb": None,
+                        "free_estimate_mb": free,
+                    })
+            resp["devices"] = devices
+            return resp
+    except Exception:  # noqa: BLE001
+        pass
+
+    return resp
 
 
 @app.on_event("startup")
