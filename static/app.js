@@ -8,6 +8,9 @@ let processorNode = null; // AudioWorkletNode for capturing (pcm-chunker)
 let playerNode = null; // AudioWorkletNode for playback (pcm-player)
 let lastVideoSentTs = 0;
 let remoteImageURL = null;
+// B9: Hard-set video max FPS (future: fetch from backend config). Aligns with MIRAGE_VIDEO_MAX_FPS default (10).
+const videoMaxFps = 10;
+const videoFrameIntervalMs = 1000 / videoMaxFps; // 100 ms
 
 const LOG_EL = document.getElementById('log');
 const START_BTN = document.getElementById('startBtn');
@@ -120,7 +123,8 @@ async function setupVideo(stream) {
       if (done) return;
 
       const now = performance.now();
-      const needSend = (now - lastVideoSentTs) >= 100; // ~10 fps
+  const elapsed = now - lastVideoSentTs;
+  const needSend = elapsed >= videoFrameIntervalMs;
 
       if (needSend && frame) {
         try {
@@ -150,6 +154,8 @@ async function setupVideo(stream) {
           log('Video frame send error');
           console.error(err);
         }
+      } else if (frame) {
+        // Skipped frame due to FPS governance; simply drop it.
       }
 
       frame.close && frame.close();
@@ -196,6 +202,7 @@ async function start() {
   setupVideoWebSocket();
   await setupAudio(stream);
   await setupVideo(stream);
+  log(`Video rate limit configured: max ${videoMaxFps} fps (~${Math.round(videoFrameIntervalMs)}ms interval)`);
 }
 
 START_BTN.addEventListener('click', start);
