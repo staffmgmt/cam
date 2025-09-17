@@ -4,9 +4,16 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import traceback
 import time
-from metrics import metrics
+from metrics import metrics as _metrics_singleton, Metrics
+from config import config
 
 app = FastAPI(title="Mirage Phase 1+2 Scaffold")
+
+# Potentially reconfigure metrics based on config
+if config.metrics_fps_window != 30:  # default in metrics module
+    metrics = Metrics(fps_window=config.metrics_fps_window)
+else:
+    metrics = _metrics_singleton
 
 # Mount the static directory
 static_dir = Path(__file__).parent / "static"
@@ -71,6 +78,12 @@ async def video_ws(websocket: WebSocket):
 @app.get("/metrics")
 async def get_metrics():
     return metrics.snapshot()
+
+
+@app.on_event("startup")
+async def log_config():
+    # Simple startup log of configuration
+    print("[config]", config.as_dict())
 
 
 # Note: The Dockerfile / README launch with: uvicorn app:app --port 7860
