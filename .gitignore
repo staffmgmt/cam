@@ -20,4 +20,6 @@ pip-wheel-metadata/
 .cache/
 coverage/
 models/
+!models/.gitkeep
 checkpoints/
+!checkpoints/.gitkeep
