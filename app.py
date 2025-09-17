@@ -3,6 +3,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import traceback
+import time
+from metrics import metrics
 
 app = FastAPI(title="Mirage Phase 1+2 Scaffold")
 
@@ -30,9 +32,20 @@ async def health():
 
 async def _echo_websocket(websocket: WebSocket, kind: str):
     await websocket.accept()
+    last_ts = time.time() * 1000.0 if kind == "audio" else None
     while True:
         try:
             data = await websocket.receive_bytes()
+            size = len(data)
+            if kind == "audio":
+                now = time.time() * 1000.0
+                interval = None
+                if last_ts is not None:
+                    interval = now - last_ts
+                metrics.record_audio_chunk(size_bytes=size, loop_interval_ms=interval)
+                last_ts = now
+            elif kind == "video":
+                metrics.record_video_frame(size_bytes=size)
             # Echo straight back
             await websocket.send_bytes(data)
         except WebSocketDisconnect:
@@ -53,6 +66,11 @@ async def audio_ws(websocket: WebSocket):
 @app.websocket("/video")
 async def video_ws(websocket: WebSocket):
     await _echo_websocket(websocket, "video")
+
+
+@app.get("/metrics")
+async def get_metrics():
+    return metrics.snapshot()
 
 
 # Note: The Dockerfile / README launch with: uvicorn app:app --port 7860
