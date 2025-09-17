@@ -41,8 +41,11 @@ async function setupAudio(stream) {
     return;
   }
 
-  const samplesPerChunk = Math.round(audioContext.sampleRate * 0.25); // 250 ms -> spec said 0.25 (192ms earlier spec but instruction uses 0.25 here)
-  log(`AudioContext sampleRate=${audioContext.sampleRate}, samplesPerChunk=${samplesPerChunk}`);
+  // B8: Temporarily hard-set chunk duration to 160 ms.
+  // 160 ms @ 16 kHz => 0.160 * 16000 = 2560 samples.
+  const chunkMs = 160;
+  const samplesPerChunk = Math.round(audioContext.sampleRate * (chunkMs / 1000)); // expect 2560
+  log(`Audio chunk config: sampleRate=${audioContext.sampleRate}Hz chunkMs=${chunkMs}ms samplesPerChunk=${samplesPerChunk}`);
   processorNode = new AudioWorkletNode(audioContext, 'pcm-chunker', {
     processorOptions: { samplesPerChunk }
   });
