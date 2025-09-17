@@ -73,9 +73,9 @@ Planned collection (no aggregation service yet):
 ## Phases
 | Phase | Status |
 |-------|--------|
-| 1 | Pending |
-| 2 | Pending |
-| 3 | Pending |
+| 1 | Completed (Echo scaffold, static client) |
+| 2 | Completed (Metrics + config + voice stub + GPU info) |
+| 3 | In Progress (governance + groundwork for adaptation) |
 | 4 | Pending |
 | 5 | Pending |
 | 6 | Pending |
