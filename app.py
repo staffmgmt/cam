@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import traceback
 import time
+import array
 from metrics import metrics as _metrics_singleton, Metrics
 from config import config
 from voice_processor import voice_processor
@@ -52,11 +53,18 @@ async def _echo_websocket(websocket: WebSocket, kind: str):
                     interval = now - last_ts
 
                 infer_ms = None
+                # Convert raw bytes -> int16 array for processing path
+                # We assume little-endian 16-bit PCM from client worklet
+                pcm_int16 = array.array('h')
+                pcm_int16.frombytes(data)
                 if config.voice_enable:
-                    # Run through voice processor (pass-through currently)
-                    processed_view, infer_ms = voice_processor.process_pcm_int16(data, sample_rate=16000)
-                    # Use processed bytes for echo (still original length)
+                    # Run through voice processor (pass-through currently) using bytes view
+                    processed_view, infer_ms = voice_processor.process_pcm_int16(pcm_int16.tobytes(), sample_rate=16000)
+                    # Convert processed memoryview back to bytes
                     data = processed_view.tobytes()
+                else:
+                    # Pass-through reserialize (avoid modifying original reference)
+                    data = pcm_int16.tobytes()
                 metrics.record_audio_chunk(size_bytes=size, loop_interval_ms=interval, infer_time_ms=infer_ms)
                 last_ts = now
             elif kind == "video":
