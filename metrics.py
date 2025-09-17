@@ -28,6 +28,8 @@ class Metrics:
         self.video_avg_frame_size = 0.0
         self._fps_window = fps_window
         self._frame_times: Deque[float] = deque(maxlen=fps_window)
+    self.video_frame_interval_ema = 0.0
+    self._last_video_ts = None  # type: ignore
 
         self.ema_alpha = ema_alpha
 
@@ -61,6 +63,14 @@ class Metrics:
             self.video_avg_frame_size = ((self.video_avg_frame_size * (self.video_frames - 1)) + size_bytes) / self.video_frames
             now = time.time()
             self._frame_times.append(now)
+            # Frame interval EMA (ms)
+            if self._last_video_ts is not None:
+                interval_ms = (now - self._last_video_ts) * 1000.0
+                if self.video_frame_interval_ema == 0.0:
+                    self.video_frame_interval_ema = interval_ms
+                else:
+                    self.video_frame_interval_ema = (self.ema_alpha * interval_ms) + (1 - self.ema_alpha) * self.video_frame_interval_ema
+            self._last_video_ts = now
 
     # --------------- Report ------------------
     def snapshot(self) -> Dict[str, Any]:
@@ -80,6 +90,7 @@ class Metrics:
                 "video_bytes": self.video_bytes,
                 "video_avg_frame_size": self.video_avg_frame_size,
                 "video_fps_rolling": fps,
+                "video_frame_interval_ema_ms": self.video_frame_interval_ema,
                 "fps_window": self._fps_window,
             }
 
