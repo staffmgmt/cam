@@ -6,6 +6,7 @@ import traceback
 import time
 from metrics import metrics as _metrics_singleton, Metrics
 from config import config
+from voice_processor import voice_processor
 
 app = FastAPI(title="Mirage Phase 1+2 Scaffold")
 
@@ -49,11 +50,18 @@ async def _echo_websocket(websocket: WebSocket, kind: str):
                 interval = None
                 if last_ts is not None:
                     interval = now - last_ts
-                metrics.record_audio_chunk(size_bytes=size, loop_interval_ms=interval)
+
+                infer_ms = None
+                if config.voice_enable:
+                    # Run through voice processor (pass-through currently)
+                    processed_view, infer_ms = voice_processor.process_pcm_int16(data, sample_rate=16000)
+                    # Use processed bytes for echo (still original length)
+                    data = processed_view.tobytes()
+                metrics.record_audio_chunk(size_bytes=size, loop_interval_ms=interval, infer_time_ms=infer_ms)
                 last_ts = now
             elif kind == "video":
                 metrics.record_video_frame(size_bytes=size)
-            # Echo straight back
+            # Echo straight back (audio maybe processed)
             await websocket.send_bytes(data)
         except WebSocketDisconnect:
             # Silent disconnect
