@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Mirage Echo Baseline</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    video, img { width: 300px; }
+    #log { font: 11px/1.3 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif,monospace; white-space: pre-line; }
+  </style>
+</head>
+<body>
+  <h1>Mirage Echo Baseline</h1>
+  <button id="startBtn">Start</button>
+  <div>
+    <video id="localVid" autoplay muted playsinline></video>
+    <img id="remoteVid" alt="remote video frame" />
+  </div>
+  <audio id="remoteAudio" autoplay></audio>
+  <div id="log"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
