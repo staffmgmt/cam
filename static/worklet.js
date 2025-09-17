@@ -1,6 +1,7 @@
 class PCMChunker extends AudioWorkletProcessor {
   constructor(options) {
     super();
+    // samplesPerChunk is injected from main thread (B8 sets 160ms @16kHz = 2560 samples)
     this.samplesPerChunk = (options && options.processorOptions && options.processorOptions.samplesPerChunk) || 16000;
     this.buffer = new Float32Array(this.samplesPerChunk);
     this.offset = 0;
