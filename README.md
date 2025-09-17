@@ -1,3 +1,14 @@
+---
+title: Mirage
+emoji: 👀
+colorFrom: indigo
+colorTo: indigo
+sdk: docker
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # Mirage
 
 Phase 1–2 FastAPI + WebSocket echo scaffold (no ML models yet).
