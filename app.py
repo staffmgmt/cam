@@ -196,8 +196,38 @@ async def gpu_info():
 
 @app.on_event("startup")
 async def log_config():
-    # Simple startup log of configuration
-    print("[config]", config.as_dict())
+    # Enhanced startup logging: core config + GPU availability summary.
+    cfg = config.as_dict()
+    # GPU probe (reuse gpu_info logic minimally without full device list to keep log concise)
+    gpu_available = False
+    gpu_name = None
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            gpu_available = True
+            gpu_name = torch.cuda.get_device_name(0)
+        else:
+            # Fallback quick nvidia-smi single line
+            try:
+                out = subprocess.check_output([
+                    "nvidia-smi", "--query-gpu=name", "--format=csv,noheader,nounits"
+                ], stderr=subprocess.STDOUT, timeout=1).decode("utf-8").strip().splitlines()
+                if out:
+                    gpu_available = True
+                    gpu_name = out[0].strip()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    startup_line = {
+        "chunk_ms": cfg.get("chunk_ms"),
+        "voice_enabled": cfg.get("voice_enable"),
+        "metrics_fps_window": cfg.get("metrics_fps_window"),
+        "video_fps_limit": cfg.get("video_max_fps"),
+        "gpu_available": gpu_available,
+        "gpu_name": gpu_name,
+    }
+    print("[startup]", startup_line)
 
 
 # Note: The Dockerfile / README launch with: uvicorn app:app --port 7860
