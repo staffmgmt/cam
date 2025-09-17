@@ -28,8 +28,8 @@ class Metrics:
         self.video_avg_frame_size = 0.0
         self._fps_window = fps_window
         self._frame_times: Deque[float] = deque(maxlen=fps_window)
-    self.video_frame_interval_ema = 0.0
-    self._last_video_ts = None  # type: ignore
+        self.video_frame_interval_ema = 0.0
+        self._last_video_ts = None  # type: ignore
 
         self.ema_alpha = ema_alpha
 
