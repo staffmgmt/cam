@@ -1,7 +1,6 @@
 # Core Dependencies
 gradio==4.44.0
 torch==2.3.1
-numpy==1.24.0
 opencv-python-headless==4.9.0.80
 pillow==10.3.0
 
@@ -17,6 +16,7 @@ onnx==1.16.1
 onnxruntime-gpu==1.18.1
 
 # System & Utils
+# NOTE: Keep a single modern numpy pin to avoid resolver conflicts (removed older 1.24.0 above)
 numpy==1.26.4
 psutil==5.9.8
 
