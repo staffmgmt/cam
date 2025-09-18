@@ -21,7 +21,7 @@ tags:
 - live-portrait
 - rvc
 - virtual-camera
-short_description: "Real-time AI avatar system with <250ms latency for video calls"
+short_description: "Real-time AI avatar with face animation and voice conversion"
 ---
 
 # 🎭 Mirage: Real-time AI Avatar System
