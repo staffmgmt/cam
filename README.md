@@ -9,7 +9,7 @@ app_file: app.py
 pinned: false
 license: mit
 hardware: a10g-large
-python_version: 3.10
+python_version: "3.10"
 models:
 - KwaiVGI/LivePortrait
 - RVC-Project/Retrieval-based-Voice-Conversion-WebUI
