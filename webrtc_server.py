@@ -337,8 +337,8 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
     @pc.on("datachannel")
     def on_datachannel(channel):
-            logger.info("Data channel received: %s", channel.label)
-            if channel.label == "control":
+        logger.info("Data channel received: %s", channel.label)
+        if channel.label == "control":
                 def send_metrics():
                     pipeline = get_pipeline()
                     stats = pipeline.get_performance_stats() if pipeline.loaded else {}
@@ -348,8 +348,8 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                     except Exception:
                         logger.debug("Failed sending metrics")
 
-                @channel.on("message")
-                def on_message(message):
+            @channel.on("message")
+            def on_message(message):
                     try:
                         if isinstance(message, bytes):
                             return
@@ -362,31 +362,56 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                         elif mtype == "set_reference":
                             b64 = data.get("image_jpeg_base64")
                             if b64:
-                                try:
-                                    # Guard size (<= 2MB when base64)
-                                    if len(b64) > 2_800_000:
-                                        channel.send(json.dumps({"type": "error", "message": "reference too large"}))
-                                        return
-                                    raw = base64.b64decode(b64)
-                                    arr = np.frombuffer(raw, np.uint8)
-                                    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                                    if img is not None:
+                                async def _set_ref_async(b64data: str):
+                                    try:
+                                        if len(b64data) > 2_800_000:
+                                            channel.send(json.dumps({"type": "error", "message": "reference too large"}))
+                                            return
+                                        raw = base64.b64decode(b64data)
+                                        arr = np.frombuffer(raw, np.uint8)
+                                        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                                        if img is None:
+                                            channel.send(json.dumps({"type": "error", "message": "decode failed"}))
+                                            return
+                                        # Downscale to max 512 for stability
+                                        h, w = img.shape[:2]
+                                        scale = max(h, w)
+                                        if scale > 512:
+                                            if w >= h:
+                                                new_w = 512
+                                                new_h = max(1, int(h * (512 / w)))
+                                            else:
+                                                new_h = 512
+                                                new_w = max(1, int(w * (512 / h)))
+                                            img = cv2.resize(img, (new_w, new_h))
                                         pipeline = get_pipeline()
-                                        pipeline.set_reference_frame(img)
-                                        channel.send(json.dumps({"type": "reference_ack"}))
-                                except Exception as e:
-                                    channel.send(json.dumps({"type": "error", "message": str(e)}))
+                                        loop = asyncio.get_running_loop()
+                                        def _set_ref_blocking():
+                                            return pipeline.set_reference_frame(img)
+                                        ok = await loop.run_in_executor(None, _set_ref_blocking)
+                                        if ok:
+                                            channel.send(json.dumps({"type": "reference_ack"}))
+                                        else:
+                                            channel.send(json.dumps({"type": "error", "message": "no suitable face found"}))
+                                    except Exception as e:
+                                        logger.error(f"set_reference error: {e}")
+                                        try:
+                                            channel.send(json.dumps({"type": "error", "message": str(e)}))
+                                        except Exception:
+                                            pass
+                                asyncio.create_task(_set_ref_async(b64))
                     except Exception as e:
                         logger.error(f"Data channel message error: {e}")
 
     @pc.on("connectionstatechange")
     async def on_state_change():
-            logger.info("Peer connection state: %s", pc.connectionState)
-            if pc.connectionState in ("failed", "closed", "disconnected"):
-                try:
-                    await pc.close()
-                except Exception:
-                    pass
+        logger.info("Peer connection state: %s", pc.connectionState)
+        # Allow transient 'disconnected' to recover; only close on failed/closed
+        if pc.connectionState in ("failed", "closed"):
+            try:
+                await pc.close()
+            except Exception:
+                pass
 
     # Set remote description
     try:
