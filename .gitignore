@@ -19,7 +19,14 @@ Thumbs.db
 pip-wheel-metadata/
 .cache/
 coverage/
-models/
-!models/.gitkeep
+# Models: keep directory structure but ignore large weight/binary artifacts
+# (Allow .gitkeep, README, *.md, *.txt for documentation.)
+models/**/*.{pt,pth,bin,onnx,safetensors}
+models/**/*.npz
+models/**/*.ckpt
+!models/**/*.gitkeep
+!models/**/README.md
+!models/**/README.txt
+!models/**/README
 checkpoints/
 !checkpoints/.gitkeep

@@ -1,0 +1,444 @@
+"""WebRTC integration using aiortc for low-latency bi-directional media.
+
+This module exposes:
+- POST /webrtc/offer : Accepts an SDP offer from browser, returns SDP answer.
+- GET  /webrtc/ice   : (Optional) polling ICE candidates (simplified; trickle or full offer/answer)
+
+Media Flow (Phase 1):
+Browser camera/mic -> WebRTC -> aiortc PeerConnection ->
+  Video track -> frame hook -> pipeline.process_video_frame -> return video track to client
+  Audio track -> chunk hook  -> pipeline.process_audio_chunk -> return audio track to client
+
+Control/Data channel: "control" used for lightweight JSON messages:
+  {"type":"metrics_request"} -> server replies {"type":"metrics","payload":...}
+  {"type":"set_reference","image_jpeg_base64":...}
+
+Fallback: If aiortc not supported in environment or import fails, endpoint returns 503.
+
+Security: (basic) Optional shared secret via X-API-Key header (env MIRAGE_API_KEY).
+
+NOTE: This is a minimal, production-ready skeleton focusing on structure, error handling,
+resource cleanup and integration points. Actual model inference remains in avatar_pipeline.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+import os
+import time
+from dataclasses import dataclass
+import hashlib
+import hmac
+import secrets as pysecrets
+import base64 as pybase64
+from typing import Optional, Dict, Any
+
+from fastapi import APIRouter, HTTPException, Header
+
+try:
+    from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCConfiguration, RTCIceServer
+    from aiortc.contrib.media import MediaBlackhole
+    import av  # noqa: F401 (required by aiortc for codecs)
+    AIORTC_AVAILABLE = True
+except Exception as e:  # pragma: no cover
+    AIORTC_IMPORT_ERROR = str(e)
+    AIORTC_AVAILABLE = False
+
+import numpy as np
+import cv2
+
+from avatar_pipeline import get_pipeline
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/webrtc", tags=["webrtc"])
+
+API_KEY = os.getenv("MIRAGE_API_KEY")
+REQUIRE_API_KEY = os.getenv("MIRAGE_REQUIRE_API_KEY", "0").strip().lower() in {"1","true","yes","on"}
+TOKEN_TTL_SECONDS = int(os.getenv("MIRAGE_TOKEN_TTL", "300"))  # 5 minutes default
+STUN_URLS = os.getenv("MIRAGE_STUN_URLS", "stun:stun.l.google.com:19302")
+TURN_URL = os.getenv("MIRAGE_TURN_URL")
+TURN_USER = os.getenv("MIRAGE_TURN_USER")
+TURN_PASS = os.getenv("MIRAGE_TURN_PASS")
+
+
+def _b64u(data: bytes) -> str:
+    return pybase64.urlsafe_b64encode(data).decode('ascii').rstrip('=')
+
+
+def _b64u_decode(data: str) -> bytes:
+    pad = '=' * (-len(data) % 4)
+    return pybase64.urlsafe_b64decode(data + pad)
+
+
+def _mint_token() -> str:
+    """Stateless signed token: base64url(ts:nonce:mac)."""
+    ts = str(int(time.time()))
+    nonce = _b64u(pysecrets.token_bytes(12))
+    msg = f"{ts}:{nonce}".encode('utf-8')
+    mac = hmac.new(API_KEY.encode('utf-8'), msg, hashlib.sha256).digest()
+    return _b64u(msg) + '.' + _b64u(mac)
+
+
+def _verify_token(token: str) -> bool:
+    try:
+        parts = token.split('.')
+        if len(parts) != 2:
+            return False
+        msg_b64, mac_b64 = parts
+        msg = _b64u_decode(msg_b64)
+        mac = _b64u_decode(mac_b64)
+        ts_str, nonce = msg.decode('utf-8').split(':', 1)
+        ts = int(ts_str)
+        if time.time() - ts > TOKEN_TTL_SECONDS:
+            return False
+        expected = hmac.new(API_KEY.encode('utf-8'), msg, hashlib.sha256).digest()
+        return hmac.compare_digest(expected, mac)
+    except Exception:
+        return False
+
+
+def _check_api_key(header_val: Optional[str], token_val: Optional[str] = None):
+    # If no API key configured, allow
+    if not API_KEY:
+        return
+    # If enforcement disabled, allow
+    if not REQUIRE_API_KEY:
+        return
+    # Accept raw key or signed token
+    if header_val and header_val == API_KEY:
+        return
+    if token_val and _verify_token(token_val):
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _ice_configuration() -> RTCConfiguration:
+    servers = []
+    # STUN servers (comma-separated)
+    for url in [u.strip() for u in STUN_URLS.split(',') if u.strip()]:
+        servers.append(RTCIceServer(urls=[url]))
+    # Optional TURN
+    if TURN_URL and TURN_USER and TURN_PASS:
+        servers.append(RTCIceServer(urls=[TURN_URL], username=TURN_USER, credential=TURN_PASS))
+    return RTCConfiguration(iceServers=servers)
+
+
+def _prefer_codec(sdp: str, kind: str, codec: str) -> str:
+    """Move payload types for the given codec to the front of the m-line.
+    Minimal SDP munging for preferring codecs (e.g., H264 or VP8).
+    """
+    try:
+        lines = sdp.splitlines()
+        # Map pt -> codec
+        pt_to_codec = {}
+        for ln in lines:
+            if ln.startswith('a=rtpmap:'):
+                try:
+                    rest = ln[len('a=rtpmap:'):]
+                    pt, enc = rest.split(' ', 1)
+                    codec_name = enc.split('/')[0].upper()
+                    pt_to_codec[pt] = codec_name
+                except Exception:
+                    pass
+        # Find m-line for kind
+        for i, ln in enumerate(lines):
+            if ln.startswith('m=') and kind in ln:
+                parts = ln.split(' ')
+                header = parts[:3]
+                pts = parts[3:]
+                preferred = [pt for pt in pts if pt_to_codec.get(pt, '') == codec.upper()]
+                others = [pt for pt in pts if pt not in preferred]
+                lines[i] = ' '.join(header + preferred + others)
+                break
+        return '\r\n'.join(lines) + '\r\n'
+    except Exception:
+        return sdp
+
+
+async def _ensure_pipeline_initialized():
+    """Initialize the pipeline if not already loaded."""
+    pipeline = get_pipeline()
+    try:
+        if not getattr(pipeline, "loaded", False):
+            init = getattr(pipeline, "initialize", None)
+            if callable(init):
+                result = init()
+                if asyncio.iscoroutine(result):
+                    await result
+    except Exception as e:
+        logger.error(f"Pipeline init failed: {e}")
+
+
+@dataclass
+class PeerState:
+    pc: RTCPeerConnection
+    created: float
+    control_channel_ready: bool = False
+
+
+# In-memory single peer (extend to dict for multi-user)
+_peer_state: Optional[PeerState] = None
+_peer_lock = asyncio.Lock()
+
+
+class IncomingVideoTrack(MediaStreamTrack):
+    kind = "video"
+
+    def __init__(self, track: MediaStreamTrack):
+        super().__init__()  # base init
+        self.track = track
+        self.pipeline = get_pipeline()
+        self.frame_id = 0
+        self._last_processed: Optional[np.ndarray] = None
+        self._processing_task: Optional[asyncio.Task] = None
+        self._lock = asyncio.Lock()
+
+    async def recv(self):  # type: ignore[override]
+        frame = await self.track.recv()
+        self.frame_id += 1
+        # Convert to numpy BGR for pipeline
+        img = frame.to_ndarray(format="bgr24")
+        h, w, _ = img.shape
+        proc_input = img
+        # Optionally downscale for processing to cap latency
+        try:
+            if max(h, w) > 512:
+                scale_w = 512
+                scale_h = int(h * (512 / w)) if w >= h else 512
+                if w < h:
+                    scale_w = int(w * (512 / h))
+                proc_input = cv2.resize(img, (max(1, scale_w), max(1, scale_h)))
+        except Exception as e:
+            logger.debug(f"Video downscale skip: {e}")
+        # Schedule background processing to avoid blocking recv()
+        async def _process_async(inp: np.ndarray, expected_size: tuple[int, int], fid: int):
+            try:
+                out_small = self.pipeline.process_video_frame(inp, fid)
+                if (out_small.shape[1], out_small.shape[0]) != expected_size:
+                    out = cv2.resize(out_small, expected_size)
+                else:
+                    out = out_small
+                async with self._lock:
+                    self._last_processed = out
+            except Exception as ex:
+                logger.error(f"Video processing error(bg): {ex}")
+            finally:
+                self._processing_task = None
+
+        expected = (w, h)
+        if self._processing_task is None:
+            # Only run one processing task at a time; drop older frames
+            self._processing_task = asyncio.create_task(_process_async(proc_input, expected, self.frame_id))
+
+        # Use last processed if available, else pass-through
+        async with self._lock:
+            processed = self._last_processed if self._last_processed is not None else img
+        # Convert back to VideoFrame
+        new_frame = frame.from_ndarray(processed, format="bgr24")
+        new_frame.pts = frame.pts
+        new_frame.time_base = frame.time_base
+        return new_frame
+
+
+class IncomingAudioTrack(MediaStreamTrack):
+    kind = "audio"
+
+    def __init__(self, track: MediaStreamTrack):
+        super().__init__()
+        self.track = track
+        self.pipeline = get_pipeline()
+        self._resample_to_16k = None
+        self._resample_from_16k = None
+
+    async def recv(self):  # type: ignore[override]
+        frame = await self.track.recv()
+        # frame is an AudioFrame (PCM)
+        try:
+            import av
+            from av.audio.resampler import AudioResampler
+            # Initialize resamplers once using input characteristics
+            if self._resample_to_16k is None:
+                self._resample_to_16k = AudioResampler(format='s16', layout='mono', rate=16000)
+            if self._resample_from_16k is None:
+                # Back to original sample rate and layout; keep s16 for low overhead
+                target_layout = frame.layout.name if frame.layout else 'mono'
+                target_rate = frame.sample_rate or 48000
+                self._resample_from_16k = AudioResampler(format='s16', layout=target_layout, rate=target_rate)
+
+            # 1) To mono s16 @16k for pipeline
+            f_16k_list = self._resample_to_16k.resample(frame)
+            if isinstance(f_16k_list, list):
+                f_16k = f_16k_list[0]
+            else:
+                f_16k = f_16k_list
+            pcm16k = f_16k.to_ndarray()  # (channels, samples), dtype=int16
+            if pcm16k.ndim == 2:
+                # convert to mono if needed
+                if pcm16k.shape[0] > 1:
+                    pcm16k = np.mean(pcm16k, axis=0, keepdims=True).astype(np.int16)
+                # drop channel dim -> (samples,)
+                pcm16k = pcm16k.reshape(-1)
+
+            # 2) Pipeline processing (mono 16k int16 ndarray)
+            processed_arr = self.pipeline.process_audio_chunk(pcm16k)
+            if isinstance(processed_arr, bytes):
+                processed_bytes = processed_arr
+            else:
+                processed_bytes = np.asarray(processed_arr, dtype=np.int16).tobytes()
+
+            # 3) Wrap processed back into an av frame @16k mono s16
+            samples = len(processed_bytes) // 2
+            f_proc_16k = av.AudioFrame(format='s16', layout='mono', samples=samples)
+            f_proc_16k.sample_rate = 16000
+            f_proc_16k.planes[0].update(processed_bytes)
+
+            # 4) Resample back to original sample rate/layout
+            f_out_list = self._resample_from_16k.resample(f_proc_16k)
+            if isinstance(f_out_list, list) and len(f_out_list) > 0:
+                f_out = f_out_list[0]
+            else:
+                f_out = f_proc_16k  # fallback
+
+            # Preserve timing as best-effort
+            f_out.pts = frame.pts
+            f_out.time_base = frame.time_base
+            return f_out
+        except Exception as e:
+            logger.error(f"Audio processing error: {e}")
+            return frame
+
+
+@router.post("/offer")
+async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(default=None), x_auth_token: Optional[str] = Header(default=None)):
+    """Accept SDP offer and return SDP answer."""
+    # If enforcement enabled, require a valid signed token; otherwise allow
+    if REQUIRE_API_KEY:
+        if not (x_auth_token and _verify_token(x_auth_token)):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+    if not AIORTC_AVAILABLE:
+        raise HTTPException(status_code=503, detail=f"aiortc not available: {AIORTC_IMPORT_ERROR}")
+
+    async with _peer_lock:
+        global _peer_state
+        # Ensure pipeline is ready before wiring tracks
+        await _ensure_pipeline_initialized()
+        # Cleanup existing peer if present
+        if _peer_state is not None:
+            try:
+                await _peer_state.pc.close()
+            except Exception:
+                pass
+            _peer_state = None
+
+    pc = RTCPeerConnection(configuration=_ice_configuration())
+    blackhole = MediaBlackhole()  # optional sink
+
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+            logger.info("Data channel received: %s", channel.label)
+            if channel.label == "control":
+                def send_metrics():
+                    pipeline = get_pipeline()
+                    stats = pipeline.get_performance_stats() if pipeline.loaded else {}
+                    payload = json.dumps({"type": "metrics", "payload": stats})
+                    try:
+                        channel.send(payload)
+                    except Exception:
+                        logger.debug("Failed sending metrics")
+
+                @channel.on("message")
+                def on_message(message):
+                    try:
+                        if isinstance(message, bytes):
+                            return
+                        data = json.loads(message)
+                        mtype = data.get("type")
+                        if mtype == "ping":
+                            channel.send(json.dumps({"type": "pong", "t": time.time()}))
+                        elif mtype == "metrics_request":
+                            send_metrics()
+                        elif mtype == "set_reference":
+                            b64 = data.get("image_jpeg_base64")
+                            if b64:
+                                try:
+                                    # Guard size (<= 2MB when base64)
+                                    if len(b64) > 2_800_000:
+                                        channel.send(json.dumps({"type": "error", "message": "reference too large"}))
+                                        return
+                                    raw = base64.b64decode(b64)
+                                    arr = np.frombuffer(raw, np.uint8)
+                                    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                                    if img is not None:
+                                        pipeline = get_pipeline()
+                                        pipeline.set_reference_frame(img)
+                                        channel.send(json.dumps({"type": "reference_ack"}))
+                                except Exception as e:
+                                    channel.send(json.dumps({"type": "error", "message": str(e)}))
+                    except Exception as e:
+                        logger.error(f"Data channel message error: {e}")
+
+    @pc.on("connectionstatechange")
+    async def on_state_change():
+            logger.info("Peer connection state: %s", pc.connectionState)
+            if pc.connectionState in ("failed", "closed", "disconnected"):
+                try:
+                    await pc.close()
+                except Exception:
+                    pass
+
+    # Set remote description
+    try:
+        desc = RTCSessionDescription(sdp=offer["sdp"], type=offer["type"])
+        await pc.setRemoteDescription(desc)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
+
+    # Attach incoming tracks and re-add outbound processed tracks
+    @pc.on("track")
+    def on_track(track):
+        logger.info("Track received: %s", track.kind)
+        if track.kind == "video":
+            local = IncomingVideoTrack(track)
+            pc.addTrack(local)
+        elif track.kind == "audio":
+            local_a = IncomingAudioTrack(track)
+            pc.addTrack(local_a)
+
+        # Create answer
+    answer = await pc.createAnswer()
+    # Prefer H264 for broader compatibility (fallback to as-is if munging fails)
+    patched_sdp = _prefer_codec(answer.sdp, 'video', os.getenv('MIRAGE_PREFERRED_VIDEO_CODEC', 'H264'))
+    answer = RTCSessionDescription(sdp=patched_sdp, type=answer.type)
+    await pc.setLocalDescription(answer)
+
+    _peer_state = PeerState(pc=pc, created=time.time())
+
+    logger.info("WebRTC answer created")
+    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
+
+@router.get("/token")
+async def mint_token():
+    """Return a short-lived signed token that can be used as X-Auth-Token.
+    Public endpoint; signature uses server-held API key, if configured.
+    """
+    if not API_KEY:
+        raise HTTPException(status_code=400, detail="API key not configured")
+    return {"token": _mint_token(), "ttl": TOKEN_TTL_SECONDS}
+
+
+@router.post("/cleanup")
+async def cleanup_peer(x_api_key: Optional[str] = Header(default=None)):
+    _check_api_key(x_api_key)
+    async with _peer_lock:
+        global _peer_state
+        if _peer_state is None:
+            return {"status": "no_peer"}
+        try:
+            await _peer_state.pc.close()
+        except Exception:
+            pass
+        _peer_state = None
+        return {"status": "closed"}

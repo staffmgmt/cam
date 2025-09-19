@@ -3,7 +3,7 @@ title: Mirage Real-time AI Avatar
 emoji: 🎭
 colorFrom: blue
 colorTo: purple
-sdk: gradio
+sdk: docker
 sdk_version: 4.44.0
 app_file: app.py
 pinned: false
@@ -49,7 +49,7 @@ Transform yourself into an AI avatar in real-time with sub-250ms latency! Perfec
 - **Face Animation**: LivePortrait (KwaiVGI)
 - **Voice Conversion**: RVC (Retrieval-based Voice Conversion)
 - **Face Detection**: SCRFD with optimized inference
-- **Backend**: FastAPI with WebSocket streaming
+- **Backend**: FastAPI with WebRTC (aiortc)
 - **Frontend**: WebRTC-enabled real-time client
 - **GPU**: NVIDIA A10G with CUDA optimization
 
@@ -130,10 +130,10 @@ The system automatically adapts quality based on performance:
 ## 🛠️ Development
 
 Built with modern technologies:
-- FastAPI for high-performance backend
+- FastAPI for high-performance backend (Docker entrypoint: uvicorn original_fastapi_app:app)
 - PyTorch with CUDA acceleration
 - OpenCV for image processing
-- WebSocket for real-time communication
+- WebRTC (aiortc) for real-time media transport
 - Docker for consistent deployment
 
 ## 📄 License

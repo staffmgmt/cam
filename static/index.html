@@ -107,66 +107,31 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>🎭 Mirage Real-time AI Avatar</h1>
-      <p>Live face animation and voice conversion with &lt;250ms latency</p>
+      <h1>Mirage Realtime Avatar</h1>
+      <p class="subtitle">Production Preview</p>
     </div>
 
-    <div class="controls">
-      <button id="initBtn">Initialize AI Pipeline</button>
-      <button id="startBtn" disabled>Start Capture</button>
-      <button id="stopBtn" disabled>Stop</button>
-      <input type="file" id="referenceInput" accept="image/*" disabled>
-      <button id="virtualCamBtn" disabled>Enable Virtual Camera</button>
-    </div>
-
-    <div id="statusDiv"></div>
-
-    <div class="metrics" id="metrics">
-      <div class="metric-card">
-        <div class="metric-value" id="fpsValue">0</div>
-        <div class="metric-label">Video FPS</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-value" id="latencyValue">0ms</div>
-        <div class="metric-label">Avg Latency</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-value" id="gpuValue">N/A</div>
-        <div class="metric-label">GPU Memory</div>
-      </div>
-      <div class="metric-card">
-        <div class="metric-value" id="statusValue">Idle</div>
-        <div class="metric-label">Pipeline Status</div>
-      </div>
+    <div class="controls" id="controls">
+      <input type="file" id="referenceInput" accept="image/*" title="Reference Image" />
+      <button id="connectBtn">Connect</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+      <span id="statusText" style="margin-left:auto;font-size:12px;color:#888;">Idle</span>
     </div>
 
     <div class="video-container">
       <div class="video-box">
-        <h3>📹 Local Camera</h3>
-        <video id="localVid" autoplay muted playsinline></video>
+        <h3>Local</h3>
+        <video id="localVideo" autoplay muted playsinline></video>
       </div>
       <div class="video-box">
-        <h3>🤖 AI Avatar Output</h3>
-        <img id="remoteVid" alt="AI avatar output" />
-        <canvas id="virtualCanvas" style="display: none;"></canvas>
+        <h3>Avatar</h3>
+        <video id="remoteVideo" autoplay playsinline></video>
       </div>
     </div>
 
-    <div class="virtual-camera-info">
-      <h3>📺 Virtual Camera Integration</h3>
-      <p>The AI avatar output can be used as a virtual camera in:</p>
-      <ul>
-        <li>🎥 Zoom, Google Meet, Microsoft Teams</li>
-        <li>💬 Discord, Slack, WhatsApp Desktop</li>
-        <li>📱 OBS Studio, Streamlabs</li>
-      </ul>
-      <p><strong>Setup:</strong> Enable virtual camera, then select "Mirage Virtual Camera" in your video app settings.</p>
-    </div>
+    <div id="perfBar" style="font-size:12px;color:#bbb;margin-top:10px;">Latency: -- ms · FPS: -- · GPU: --</div>
 
-    <audio id="remoteAudio" autoplay></audio>
-    <div id="log"></div>
-
-    <script src="/static/app.js"></script>
+    <script src="/static/webrtc_prod.js"></script>
   </div>
 </body>
 </html>
