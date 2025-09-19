@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     curl \
+    wget \
+    ca-certificates \
     ffmpeg \
     libsm6 \
     libxext6 \
