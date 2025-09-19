@@ -81,6 +81,17 @@ def _mint_token() -> str:
     return _b64u(msg) + '.' + _b64u(mac)
 
 
+@router.get("/ping")
+async def webrtc_ping():
+    """Lightweight check indicating the WebRTC router is mounted.
+    Returns aiortc availability and import error (if any)."""
+    return {
+        "router": True,
+        "aiortc_available": AIORTC_AVAILABLE,
+        "aiortc_error": None if AIORTC_AVAILABLE else AIORTC_IMPORT_ERROR,
+    }
+
+
 def _verify_token(token: str) -> bool:
     try:
         parts = token.split('.')

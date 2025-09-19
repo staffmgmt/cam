@@ -77,6 +77,12 @@ async def health():
     }
 
 
+@app.get("/healthz")
+async def healthz():
+    # Minimal liveness/readiness check; returns 200 if app is serving
+    return {"ok": True}
+
+
 @app.post("/initialize")
 async def initialize_pipeline():
     """Initialize the AI pipeline"""
