@@ -71,7 +71,9 @@ async def health():
         "status": "ok", 
         "system": "real-time-ai-avatar",
         "pipeline_loaded": pipeline_initialized,
-        "gpu_available": pipeline.config.device == "cuda"
+        "gpu_available": pipeline.config.device == "cuda",
+        "webrtc_router_loaded": WEBRTC_ROUTER_LOADED,
+        "webrtc_import_error": WEBRTC_IMPORT_ERROR,
     }
 
 
