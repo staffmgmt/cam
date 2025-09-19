@@ -330,6 +330,7 @@ class RealTimeAvatarPipeline:
         start_time = time.time()
         
         try:
+            # If models aren't loaded or reference isn't ready, return the incoming frame (stable preview)
             if not self.loaded or self.reference_frame is None:
                 return frame
             
@@ -349,8 +350,11 @@ class RealTimeAvatarPipeline:
                 
                 # Detect face in current frame
                 bbox, confidence = self.face_detector.detect_face(frame_resized, frame_idx)
-                
-                if bbox is not None and confidence >= self.config.face_redetect_threshold:
+
+                if self.reference_frame is None:
+                    # No reference, keep camera as-is for stability until reference set
+                    result_frame = frame_resized
+                elif bbox is not None and confidence >= self.config.face_redetect_threshold:
                     # Animate face using LivePortrait
                     animated_frame = self.liveportrait.animate_face(
                         self.reference_frame, frame_resized
