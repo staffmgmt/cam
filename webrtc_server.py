@@ -455,8 +455,9 @@ async def mint_token():
 
 
 @router.post("/cleanup")
-async def cleanup_peer(x_api_key: Optional[str] = Header(default=None)):
-    _check_api_key(x_api_key)
+async def cleanup_peer(x_api_key: Optional[str] = Header(default=None), x_auth_token: Optional[str] = Header(default=None)):
+    # Accept either raw API key or signed auth token when enforcement enabled
+    _check_api_key(x_api_key, token_val=x_auth_token)
     async with _peer_lock:
         global _peer_state
         if _peer_state is None:

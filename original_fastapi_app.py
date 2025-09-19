@@ -33,11 +33,25 @@ static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # Mount WebRTC router (aiortc based)
+WEBRTC_ROUTER_LOADED = False
+WEBRTC_IMPORT_ERROR = None
 try:
     from webrtc_server import router as webrtc_router  # type: ignore
     app.include_router(webrtc_router)
+    WEBRTC_ROUTER_LOADED = True
 except Exception as e:  # pragma: no cover
+    WEBRTC_IMPORT_ERROR = str(e)
     print(f"[WARN] WebRTC router not loaded: {e}")
+    # Provide diagnostic fallbacks so the frontend sees 503 instead of 404
+    from fastapi import HTTPException as _HTTPException  # local alias to avoid shadowing
+
+    @app.get("/webrtc/token")
+    async def _fallback_token():  # type: ignore[override]
+        raise _HTTPException(status_code=503, detail=f"WebRTC unavailable: {WEBRTC_IMPORT_ERROR or 'router not loaded'}")
+
+    @app.post("/webrtc/offer")
+    async def _fallback_offer():  # type: ignore[override]
+        raise _HTTPException(status_code=503, detail=f"WebRTC unavailable: {WEBRTC_IMPORT_ERROR or 'router not loaded'}")
 
 @app.get("/", response_class=HTMLResponse)
 async def root():

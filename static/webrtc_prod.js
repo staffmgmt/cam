@@ -6,7 +6,8 @@
     localStream: null,
     metricsTimer: null,
     referenceImage: null,
-    connected: false
+    connected: false,
+    authToken: null
   };
   const els = {
     ref: document.getElementById('referenceInput'),
@@ -34,19 +35,29 @@
       setStatus('Requesting media');
       els.connect.disabled = true;
       // Fetch short-lived auth token (if server requires)
-      let authToken = null;
+      let authToken = state.authToken;
       try {
         const t = await fetch('/webrtc/token');
         if (t.ok) {
           const j = await t.json();
-          authToken = j.token;
+          authToken = j.token; state.authToken = authToken;
+        } else if (t.status === 404) {
+          // Likely router not mounted; keep null and let server decide
+          console.warn('Token endpoint 404 - proceeding without token');
         }
       } catch(_){}
       state.localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
       els.localVideo.srcObject = state.localStream;
       setStatus('Creating peer');
       state.pc = new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
-      state.pc.onconnectionstatechange = ()=>{ log('pc state', state.pc.connectionState); if(['failed','disconnected','closed'].includes(state.pc.connectionState)){ disconnect(); } };
+      state.pc.onconnectionstatechange = ()=>{
+        const st = state.pc.connectionState;
+        log('pc state', st);
+        // Allow transient 'disconnected' to recover; only hard close on failed/closed
+        if(['failed','closed'].includes(st)){
+          disconnect();
+        }
+      };
       state.pc.ontrack = ev => {
         if(ev.streams && ev.streams[0]){
           els.remoteVideo.srcObject = ev.streams[0];
@@ -78,6 +89,8 @@
       if(!r.ok){
         if(r.status===401 || r.status===403){
           setStatus('Unauthorized (check API key/token)');
+        } else if (r.status===404){
+          setStatus('Offer endpoint not found (server not exposing /webrtc)');
         } else {
           setStatus('Offer failed '+r.status);
         }
@@ -107,6 +120,12 @@
     if(state.control){ try { state.control.close(); }catch(_){} }
     if(state.pc){ try { state.pc.close(); }catch(_){} }
     if(state.localStream){ state.localStream.getTracks().forEach(t=>t.stop()); }
+    // Best-effort server cleanup
+    try {
+      const hdrs = {};
+      if (state.authToken) hdrs['X-Auth-Token'] = state.authToken;
+      await fetch('/webrtc/cleanup', {method:'POST', headers: hdrs});
+    } catch(_){ }
     state.pc=null; state.control=null; state.localStream=null; state.connected=false;
     els.connect.disabled=false; els.disconnect.disabled=true; setStatus('Idle');
   }
