@@ -434,12 +434,21 @@ class RealTimeAvatarPipeline:
             opt_stats = self.optimizer.get_comprehensive_stats()
             
             # Basic pipeline stats
+            def _percentile(arr, p):
+                if not arr:
+                    return 0
+                return float(np.percentile(np.array(arr), p))
+
             pipeline_stats = {
                 "video_fps": len(video_times) / max(sum(video_times) / 1000, 0.001) if video_times else 0,
-                "avg_video_latency_ms": np.mean(video_times) if video_times else 0,
-                "avg_audio_latency_ms": np.mean(audio_times) if audio_times else 0,
-                "max_video_latency_ms": np.max(video_times) if video_times else 0,
-                "max_audio_latency_ms": np.max(audio_times) if audio_times else 0,
+                "avg_video_latency_ms": float(np.mean(video_times)) if video_times else 0,
+                "p50_video_latency_ms": _percentile(video_times, 50),
+                "p95_video_latency_ms": _percentile(video_times, 95),
+                "avg_audio_latency_ms": float(np.mean(audio_times)) if audio_times else 0,
+                "p50_audio_latency_ms": _percentile(audio_times, 50),
+                "p95_audio_latency_ms": _percentile(audio_times, 95),
+                "max_video_latency_ms": float(np.max(video_times)) if video_times else 0,
+                "max_audio_latency_ms": float(np.max(audio_times)) if audio_times else 0,
                 "models_loaded": self.loaded,
                 "gpu_available": torch.cuda.is_available(),
                 "gpu_memory_used": torch.cuda.memory_allocated() / 1024**3 if torch.cuda.is_available() else 0,

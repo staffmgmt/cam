@@ -1,4 +1,7 @@
-/* Mirage Real-time AI Avatar Client */
+/* DEPRECATED (dev WebSocket client). Removed for production. Use webrtc_prod.js */
+// This file intentionally contains no executable code in production deployments.
+// It remains only to avoid broken references from older pages; index.html does not load it.
+export {};
 
 // Globals
 let audioWs = null;
