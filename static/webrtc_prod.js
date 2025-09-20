@@ -26,7 +26,12 @@
     if(!file) return;
     const buf = await file.arrayBuffer();
     const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-    state.referenceImage = b64; // send after control channel open
+    state.referenceImage = b64; // cache; send now if connected
+    try {
+      if (state.connected && state.control && state.control.readyState === 'open') {
+        state.control.send(JSON.stringify({type:'set_reference', image_jpeg_base64: state.referenceImage}));
+      }
+    } catch(_) {}
   }
 
   async function connect(){
@@ -117,9 +122,12 @@
 
   async function disconnect(){
     if(state.metricsTimer){ clearInterval(state.metricsTimer); state.metricsTimer=null; }
-    if(state.control){ try { state.control.close(); }catch(_){} }
-    if(state.pc){ try { state.pc.close(); }catch(_){} }
-    if(state.localStream){ state.localStream.getTracks().forEach(t=>t.stop()); }
+    if(state.control){ try { state.control.onmessage=null; state.control.close(); }catch(_){} }
+    if(state.pc){ try { state.pc.ontrack=null; state.pc.onconnectionstatechange=null; state.pc.close(); }catch(_){} }
+    if(state.localStream){ try { state.localStream.getTracks().forEach(t=>t.stop()); } catch(_){} }
+    // Clear media elements
+    try { els.localVideo.srcObject = null; } catch(_){}
+    try { els.remoteVideo.srcObject = null; } catch(_){}
     // Best-effort server cleanup
     try {
       const hdrs = {};
