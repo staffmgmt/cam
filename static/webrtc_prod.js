@@ -102,11 +102,12 @@
         } else if (r.status===404){
           setStatus('Offer endpoint not found (server not exposing /webrtc)');
         } else if (r.status===503){
-          try { const txt = await r.text(); setStatus('Offer failed 503'); console.warn('503 body', txt); } catch(_){ setStatus('Offer failed 503'); }
+          try { const txt = await r.text(); setStatus('Offer failed 503'); console.warn('503 body', txt); }
+          catch(_){ setStatus('Offer failed 503'); }
         } else {
           setStatus('Offer failed '+r.status);
         }
-        els.connect.disabled=false; return;
+        els.connect.disabled=false; els.disconnect.disabled=true; return;
       }
       const answer = await r.json();
       await state.pc.setRemoteDescription(answer);

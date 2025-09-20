@@ -132,6 +132,11 @@ async def webrtc_ping():
         "aiortc_error": None if AIORTC_AVAILABLE else AIORTC_IMPORT_ERROR,
     }
 
+# Minimal root to confirm router is mounted
+@router.get("")
+async def webrtc_root():
+    return {"webrtc": True, "aiortc_available": AIORTC_AVAILABLE}
+
 
 def _verify_token(token: str) -> bool:
     try:
@@ -365,6 +370,7 @@ class IncomingAudioTrack(MediaStreamTrack):
 @router.post("/offer")
 async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(default=None), x_auth_token: Optional[str] = Header(default=None)):
     """Accept SDP offer and return SDP answer."""
+    global _peer_state  # declare once at top to avoid 'used prior to global declaration'
     # If enforcement enabled, require a valid signed token; otherwise allow
     if REQUIRE_API_KEY:
         if not (x_auth_token and _verify_token(x_auth_token)):
@@ -373,7 +379,6 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         raise HTTPException(status_code=503, detail=f"aiortc not available: {AIORTC_IMPORT_ERROR}")
 
     async with _peer_lock:
-        global _peer_state
         # Ensure pipeline is ready before wiring tracks
         await _ensure_pipeline_initialized()
         # Cleanup existing peer if present
@@ -507,7 +512,6 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     answer = RTCSessionDescription(sdp=patched_sdp, type=answer.type)
     await pc.setLocalDescription(answer)
 
-    global _peer_state
     _peer_state = PeerState(pc=pc, created=time.time())
 
     logger.info("WebRTC answer created")
