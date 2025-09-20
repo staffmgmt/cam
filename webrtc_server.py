@@ -391,7 +391,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                         elif mtype == "metrics_request":
                             send_metrics()
                         elif mtype == "set_reference":
-                            b64 = data.get("image_jpeg_base64")
+                            b64 = data.get("image_jpeg_base64") or data.get("image_base64")
                             if b64:
                                 async def _set_ref_async(b64data: str):
                                     try:
@@ -400,6 +400,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                                             return
                                         raw = base64.b64decode(b64data)
                                         arr = np.frombuffer(raw, np.uint8)
+                                        # cv2.imdecode handles JPEG, PNG, WebP, etc. automatically
                                         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                                         if img is None:
                                             channel.send(json.dumps({"type": "error", "message": "decode failed"}))

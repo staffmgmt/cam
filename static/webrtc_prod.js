@@ -29,7 +29,7 @@
     state.referenceImage = b64; // cache; send now if connected
     try {
       if (state.connected && state.control && state.control.readyState === 'open') {
-        state.control.send(JSON.stringify({type:'set_reference', image_jpeg_base64: state.referenceImage}));
+        state.control.send(JSON.stringify({type:'set_reference', image_base64: state.referenceImage}));
       }
     } catch(_) {}
   }
@@ -74,7 +74,7 @@
         state.connected = true;
         els.disconnect.disabled = false;
         if(state.referenceImage){
-          try { state.control.send(JSON.stringify({type:'set_reference', image_jpeg_base64: state.referenceImage})); } catch(e) {}
+          try { state.control.send(JSON.stringify({type:'set_reference', image_base64: state.referenceImage})); } catch(e) {}
         }
         // Metrics polling
         state.metricsTimer = setInterval(()=>{

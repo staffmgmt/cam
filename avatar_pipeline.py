@@ -15,16 +15,43 @@ from pathlib import Path
 import asyncio
 from collections import deque
 import traceback
-from virtual_camera import get_virtual_camera_manager
-from enhanced_metrics import get_enhanced_metrics, enhance_existing_stats
-from safe_model_integration import get_safe_model_loader
-from landmark_reenactor import LandmarkReenactor
 import os
-from realtime_optimizer import get_realtime_optimizer
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Optional imports - make them resilient
+try:
+    from virtual_camera import get_virtual_camera_manager
+except Exception as e:
+    logger.warning(f"virtual_camera not available: {e}")
+    get_virtual_camera_manager = None
+
+try:
+    from enhanced_metrics import get_enhanced_metrics, enhance_existing_stats
+except Exception as e:
+    logger.warning(f"enhanced_metrics not available: {e}")
+    get_enhanced_metrics = None
+    enhance_existing_stats = lambda x: x
+
+try:
+    from safe_model_integration import get_safe_model_loader
+except Exception as e:
+    logger.warning(f"safe_model_integration not available: {e}")
+    get_safe_model_loader = None
+
+try:
+    from landmark_reenactor import LandmarkReenactor
+except Exception as e:
+    logger.warning(f"landmark_reenactor not available: {e}")
+    LandmarkReenactor = None
+
+try:
+    from realtime_optimizer import get_realtime_optimizer
+except Exception as e:
+    logger.warning(f"realtime_optimizer not available: {e}")
+    get_realtime_optimizer = None
 
 class ModelConfig:
     """Configuration for AI models"""
