@@ -18,12 +18,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     wget \
+    pkg-config \
     ca-certificates \
     ffmpeg \
+    libopus0 \
+    libsrtp2-1 \
+    libsrtp2-dev \
     libsm6 \
     libxext6 \
     libgl1 \
     libglib2.0-0 \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -48,9 +53,12 @@ RUN mkdir -p /app/models/liveportrait /app/models/rvc /app/models/hubert /app/mo
 # Expose HTTP port
 EXPOSE 7860
 
+# Default port (Hugging Face Spaces injects PORT env; fallback to 7860)
+ENV PORT=7860
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD curl -fsS http://localhost:7860/health || exit 1
+    CMD sh -c 'curl -fsS http://localhost:${PORT:-7860}/health || exit 1'
 
-# Run FastAPI app with uvicorn (WebRTC endpoints + static UI)
-CMD ["uvicorn", "original_fastapi_app:app", "--host", "0.0.0.0", "--port", "7860"]
+# Run FastAPI app with uvicorn (WebRTC endpoints + static UI), binding to PORT
+CMD ["sh", "-c", "uvicorn original_fastapi_app:app --host 0.0.0.0 --port ${PORT:-7860}"]
