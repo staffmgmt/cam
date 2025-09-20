@@ -22,8 +22,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \
     libopus0 \
+    libopus-dev \
     libsrtp2-1 \
     libsrtp2-dev \
+    libvpx7 \
+    libvpx-dev \
+    libavcodec58 \
+    libavformat58 \
+    libavutil56 \
+    libavdevice58 \
+    libavfilter7 \
+    libswscale5 \
+    libswresample3 \
     libsm6 \
     libxext6 \
     libgl1 \

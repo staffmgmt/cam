@@ -39,6 +39,11 @@
     try {
       setStatus('Requesting media');
       els.connect.disabled = true;
+      // Quick ping to verify router is mounted
+      try {
+        const ping = await fetch('/webrtc/ping');
+        if(ping.ok){ const j = await ping.json(); log('webrtc ping', j); }
+      } catch(_){ }
       // Fetch short-lived auth token (if server requires)
       let authToken = state.authToken;
       try {
@@ -96,6 +101,8 @@
           setStatus('Unauthorized (check API key/token)');
         } else if (r.status===404){
           setStatus('Offer endpoint not found (server not exposing /webrtc)');
+        } else if (r.status===503){
+          try { const txt = await r.text(); setStatus('Offer failed 503'); console.warn('503 body', txt); } catch(_){ setStatus('Offer failed 503'); }
         } else {
           setStatus('Offer failed '+r.status);
         }

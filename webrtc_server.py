@@ -48,14 +48,51 @@ except Exception as e:  # pragma: no cover
 
 import numpy as np
 import cv2
-
-from avatar_pipeline import get_pipeline
 try:
     from webrtc_connection_monitoring import add_connection_monitoring  # optional diagnostics
 except Exception:
     add_connection_monitoring = None
 
 logger = logging.getLogger(__name__)
+
+# Lazy pipeline getter with safe pass-through fallback to ensure router mounts
+_pipeline_singleton = None
+
+class _PassThroughPipeline:
+    def __init__(self):
+        # Mark as loaded so initialization is skipped
+        self.loaded = True
+
+    def initialize(self):
+        return True
+
+    def set_reference_frame(self, img):
+        # No-op reference; return False to indicate not used
+        return False
+
+    def process_video_frame(self, img):
+        # Pass-through video
+        return img
+
+    def process_audio_chunk(self, pcm):
+        # Pass-through audio (bytes or np array)
+        return pcm
+
+    def get_performance_stats(self):
+        return {}
+
+def get_pipeline():  # type: ignore
+    global _pipeline_singleton
+    if _pipeline_singleton is not None:
+        return _pipeline_singleton
+    try:
+        from avatar_pipeline import get_pipeline as _real_get_pipeline
+        _pipeline_singleton = _real_get_pipeline()
+    except Exception as e:
+        logger.error(f"avatar_pipeline unavailable, using pass-through: {e}")
+        _pipeline_singleton = _PassThroughPipeline()
+    return _pipeline_singleton
+
 router = APIRouter(prefix="/webrtc", tags=["webrtc"])
 
 API_KEY = os.getenv("MIRAGE_API_KEY")
