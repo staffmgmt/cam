@@ -50,6 +50,15 @@ COPY . /app
 # Create directories for models and checkpoints (if not already present)
 RUN mkdir -p /app/models/liveportrait /app/models/rvc /app/models/hubert /app/models/rmvpe /app/checkpoints /tmp/cuda_cache
 
+# Optional model downloader configuration (example URLs)
+ARG MIRAGE_DOWNLOAD_MODELS=0
+ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/appearance_feature_extractor.onnx"
+ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/motion_extractor.onnx"
+ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
+    MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
+    MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL}
+RUN python3 /app/model_downloader.py || true
+
 # Expose HTTP port
 EXPOSE 7860
 

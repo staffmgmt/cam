@@ -18,6 +18,8 @@ import traceback
 from virtual_camera import get_virtual_camera_manager
 from enhanced_metrics import get_enhanced_metrics, enhance_existing_stats
 from safe_model_integration import get_safe_model_loader
+from landmark_reenactor import LandmarkReenactor
+import os
 from realtime_optimizer import get_realtime_optimizer
 
 # Setup logging
@@ -259,6 +261,8 @@ class RealTimeAvatarPipeline:
         self.liveportrait = LivePortraitModel(self.config)
         self.rvc = RVCVoiceConverter(self.config)
         self.safe_loader = get_safe_model_loader()
+        self.landmark_mode = os.getenv("MIRAGE_ENABLE_LANDMARK_REENACTOR", "0").lower() in ("1","true","yes","on")
+        self.landmark_reenactor = LandmarkReenactor(target_size=self.config.video_resolution) if self.landmark_mode else None
         
         # Performance optimization
         self.optimizer = get_realtime_optimizer()
@@ -322,6 +326,13 @@ class RealTimeAvatarPipeline:
     def set_reference_frame(self, frame: np.ndarray):
         """Set reference frame for avatar"""
         try:
+            # Landmark reenactor reference if enabled
+            if self.landmark_reenactor is not None:
+                if self.landmark_reenactor.set_reference(frame):
+                    self.reference_frame = frame.copy()
+                    self.current_face_bbox = None
+                    logger.info("Reference set via landmark reenactor")
+                    return True
             # Detect face in reference frame
             bbox = None
             confidence = 0.0
@@ -402,6 +413,8 @@ class RealTimeAvatarPipeline:
                         animated_frame = self.safe_loader.safe_animate_face(
                             self.reference_frame, frame_resized
                         )
+                    elif self.landmark_reenactor is not None:
+                        animated_frame = self.landmark_reenactor.reenact(frame_resized)
                     else:
                         animated_frame = frame_resized
                     self._metrics.record_component_timing('animation', (time.time() - t1) * 1000.0)
