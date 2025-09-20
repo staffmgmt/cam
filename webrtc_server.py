@@ -50,6 +50,10 @@ import numpy as np
 import cv2
 
 from avatar_pipeline import get_pipeline
+try:
+    from webrtc_connection_monitoring import add_connection_monitoring  # optional diagnostics
+except Exception:
+    add_connection_monitoring = None
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webrtc", tags=["webrtc"])
@@ -350,14 +354,30 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     def on_datachannel(channel):
         logger.info("Data channel received: %s", channel.label)
         if channel.label == "control":
-                def send_metrics():
-                    pipeline = get_pipeline()
-                    stats = pipeline.get_performance_stats() if pipeline.loaded else {}
-                    payload = json.dumps({"type": "metrics", "payload": stats})
-                    try:
-                        channel.send(payload)
-                    except Exception:
-                        logger.debug("Failed sending metrics")
+            # Mark control channel readiness on open/close
+            @channel.on("open")
+            def _on_open():
+                try:
+                    if _peer_state is not None:
+                        _peer_state.control_channel_ready = True
+                except Exception:
+                    pass
+
+            @channel.on("close")
+            def _on_close():
+                try:
+                    if _peer_state is not None:
+                        _peer_state.control_channel_ready = False
+                except Exception:
+                    pass
+            def send_metrics():
+                pipeline = get_pipeline()
+                stats = pipeline.get_performance_stats() if pipeline.loaded else {}
+                payload = json.dumps({"type": "metrics", "payload": stats})
+                try:
+                    channel.send(payload)
+                except Exception:
+                    logger.debug("Failed sending metrics")
 
             @channel.on("message")
             def on_message(message):
@@ -449,6 +469,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     answer = RTCSessionDescription(sdp=patched_sdp, type=answer.type)
     await pc.setLocalDescription(answer)
 
+    global _peer_state
     _peer_state = PeerState(pc=pc, created=time.time())
 
     logger.info("WebRTC answer created")
@@ -479,3 +500,13 @@ async def cleanup_peer(x_api_key: Optional[str] = Header(default=None), x_auth_t
             pass
         _peer_state = None
         return {"status": "closed"}
+
+# Optional: connection monitoring endpoint for diagnostics
+if add_connection_monitoring is not None:
+    try:
+        # Provide a getter to reflect live _peer_state rather than a stale snapshot
+        def _get_peer_state():
+            return _peer_state
+        add_connection_monitoring(router, _get_peer_state)
+    except Exception:
+        pass

@@ -16,6 +16,8 @@ import asyncio
 from collections import deque
 import traceback
 from virtual_camera import get_virtual_camera_manager
+from enhanced_metrics import get_enhanced_metrics, enhance_existing_stats
+from safe_model_integration import get_safe_model_loader
 from realtime_optimizer import get_realtime_optimizer
 
 # Setup logging
@@ -256,6 +258,7 @@ class RealTimeAvatarPipeline:
         self.face_detector = FaceDetector(self.config)
         self.liveportrait = LivePortraitModel(self.config)
         self.rvc = RVCVoiceConverter(self.config)
+        self.safe_loader = get_safe_model_loader()
         
         # Performance optimization
         self.optimizer = get_realtime_optimizer()
@@ -272,6 +275,7 @@ class RealTimeAvatarPipeline:
         # Performance tracking
         self.frame_times = deque(maxlen=100)
         self.audio_times = deque(maxlen=100)
+        self._metrics = get_enhanced_metrics()
         
         # Processing locks
         self.video_lock = threading.Lock()
@@ -286,19 +290,28 @@ class RealTimeAvatarPipeline:
         """Initialize all models"""
         logger.info("Initializing real-time avatar pipeline...")
         
-        # Load models in parallel
-        tasks = [
-            self.face_detector.load_model(),
-            self.liveportrait.load_models(),
-            self.rvc.load_model()
-        ]
+        # Face detector load may be synchronous; run in executor to avoid blocking loop
+        loop = asyncio.get_running_loop()
+        try:
+            fd_ok = await loop.run_in_executor(None, self.face_detector.load_model)
+        except Exception as e:
+            logger.error(f"Face detector load failed: {e}")
+            fd_ok = False
+
+        # Load async models and optional safe models in parallel
+        lp_task = self.liveportrait.load_models()
+        rvc_task = self.rvc.load_model()
+        scrfd_task = self.safe_loader.safe_load_scrfd()
+        lp_safe_task = self.safe_loader.safe_load_liveportrait()
+
+        results = await asyncio.gather(lp_task, rvc_task, scrfd_task, lp_safe_task, return_exceptions=True)
+        # Normalize booleans from tasks
+        async_ok = sum(1 for r in results if r is True)
+        success_count = async_ok + (1 if fd_ok else 0)
+        logger.info(f"Loaded components - FaceDetector: {fd_ok}, LivePortrait: {results[0]}, RVC: {results[1]}, SCRFD(safe): {results[2]}, LivePortrait(safe): {results[3]}")
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        success_count = sum(1 for r in results if r is True)
-        logger.info(f"Loaded {success_count}/3 models successfully")
-        
-        if success_count >= 2:  # At least face detector + one AI model
+        if (fd_ok and (results[0] is True or results[3] is True)) or (fd_ok and results[1] is True):
+            # Require face detector + (any of liveportrait variants or RVC) to proceed
             self.loaded = True
             logger.info("Pipeline initialization successful")
             return True
@@ -310,7 +323,18 @@ class RealTimeAvatarPipeline:
         """Set reference frame for avatar"""
         try:
             # Detect face in reference frame
-            bbox, confidence = self.face_detector.detect_face(frame, 0)
+            bbox = None
+            confidence = 0.0
+            # Prefer safe SCRFD if available
+            try:
+                sb = self.safe_loader.safe_detect_face(frame)
+                if sb is not None:
+                    bbox = sb
+                    confidence = 1.0  # safe path doesn't provide score; assume strong if detected
+            except Exception:
+                pass
+            if bbox is None:
+                bbox, confidence = self.face_detector.detect_face(frame, 0)
             
             if bbox is not None and confidence >= self.config.face_detection_threshold:
                 self.reference_frame = frame.copy()
@@ -349,16 +373,38 @@ class RealTimeAvatarPipeline:
                     return frame_resized
                 
                 # Detect face in current frame
-                bbox, confidence = self.face_detector.detect_face(frame_resized, frame_idx)
+                t0 = time.time()
+                bbox = None
+                confidence = 0.0
+                if self.safe_loader.scrfd_loaded:
+                    try:
+                        sb = self.safe_loader.safe_detect_face(frame_resized)
+                        if sb is not None:
+                            bbox = sb
+                            confidence = 1.0
+                    except Exception:
+                        bbox = None
+                if bbox is None:
+                    bbox, confidence = self.face_detector.detect_face(frame_resized, frame_idx)
+                self._metrics.record_component_timing('face_detection', (time.time() - t0) * 1000.0)
 
                 if self.reference_frame is None:
                     # No reference, keep camera as-is for stability until reference set
                     result_frame = frame_resized
                 elif bbox is not None and confidence >= self.config.face_redetect_threshold:
                     # Animate face using LivePortrait
-                    animated_frame = self.liveportrait.animate_face(
-                        self.reference_frame, frame_resized
-                    )
+                    t1 = time.time()
+                    if self.liveportrait.loaded:
+                        animated_frame = self.liveportrait.animate_face(
+                            self.reference_frame, frame_resized
+                        )
+                    elif self.safe_loader.liveportrait_loaded:
+                        animated_frame = self.safe_loader.safe_animate_face(
+                            self.reference_frame, frame_resized
+                        )
+                    else:
+                        animated_frame = frame_resized
+                    self._metrics.record_component_timing('animation', (time.time() - t1) * 1000.0)
                     
                     # Apply any post-processing with current quality settings
                     result_frame = self._post_process_frame(animated_frame, opt_settings)
@@ -373,6 +419,9 @@ class RealTimeAvatarPipeline:
                 # Record processing time
                 processing_time = (time.time() - start_time) * 1000
                 self.frame_times.append(processing_time)
+                self._metrics.record_video_timing(processing_time)
+                self._metrics.record_component_timing('face_detection', 0.0)  # placeholder hooks
+                self._metrics.record_component_timing('animation', 0.0)
                 self.optimizer.latency_optimizer.record_latency("video_total", processing_time)
                 
                 return result_frame
@@ -400,6 +449,9 @@ class RealTimeAvatarPipeline:
                 # Record processing time
                 processing_time = (time.time() - start_time) * 1000
                 self.audio_times.append(processing_time)
+                self._metrics.record_audio_timing(processing_time)
+                self._metrics.record_total_timing(processing_time)
+                self._metrics.record_component_timing('voice_processing', processing_time)
                 self.optimizer.latency_optimizer.record_latency("audio_total", processing_time)
                 
                 return converted_audio
@@ -460,7 +512,10 @@ class RealTimeAvatarPipeline:
             }
             
             # Merge with optimizer stats
-            return {**pipeline_stats, "optimization": opt_stats}
+            merged = {**pipeline_stats, "optimization": opt_stats}
+            # Enhance with additional percentiles/system metrics
+            merged = enhance_existing_stats(merged)
+            return merged
             
         except Exception as e:
             logger.error(f"Stats error: {e}")

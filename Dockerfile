@@ -56,6 +56,11 @@ EXPOSE 7860
 # Default port (Hugging Face Spaces injects PORT env; fallback to 7860)
 ENV PORT=7860
 
+# Feature flags for safe model integration (can be overridden in Space settings)
+# Enable SCRFD face detection by default for better reliability; keep LivePortrait safe path off initially.
+ENV MIRAGE_ENABLE_SCRFD=1 \
+    MIRAGE_ENABLE_LIVEPORTRAIT=0
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD sh -c 'curl -fsS http://localhost:${PORT:-7860}/health || exit 1'
