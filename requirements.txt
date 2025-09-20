@@ -16,7 +16,6 @@ Pillow==10.0.1
 librosa==0.10.1
 soundfile==0.12.1
 insightface==0.7.3
-mediapipe==0.10.8
 transformers==4.44.2
 librosa==0.10.2
 onnx==1.16.1

@@ -57,7 +57,8 @@ ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/reso
 ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
     MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
     MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL}
-RUN python3 /app/model_downloader.py || true
+# Skip model download during build - only download at runtime if needed
+# RUN python3 /app/model_downloader.py || true
 
 # Expose HTTP port
 EXPOSE 7860
@@ -67,8 +68,10 @@ ENV PORT=7860
 
 # Feature flags for safe model integration (can be overridden in Space settings)
 # Enable SCRFD face detection by default for better reliability; keep LivePortrait safe path off initially.
+# Landmark reenactor is also off by default to avoid MediaPipe dependency issues
 ENV MIRAGE_ENABLE_SCRFD=1 \
-    MIRAGE_ENABLE_LIVEPORTRAIT=0
+    MIRAGE_ENABLE_LIVEPORTRAIT=0 \
+    MIRAGE_ENABLE_LANDMARK_REENACTOR=0
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
