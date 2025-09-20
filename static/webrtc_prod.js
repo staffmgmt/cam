@@ -7,7 +7,9 @@
     metricsTimer: null,
     referenceImage: null,
     connected: false,
-    authToken: null
+    authToken: null,
+    connecting: false,
+    cancelled: false
   };
   const els = {
     ref: document.getElementById('referenceInput'),
@@ -36,9 +38,12 @@
 
   async function connect(){
     if(state.connected) return;
+    if(state.connecting) return;
     try {
       setStatus('Requesting media');
       els.connect.disabled = true;
+      els.disconnect.disabled = false; // allow cancel during negotiation
+      state.cancelled = false; state.connecting = true;
       // Quick ping to verify router is mounted
       try {
         const ping = await fetch('/webrtc/ping');
@@ -60,6 +65,12 @@
       els.localVideo.srcObject = state.localStream;
       setStatus('Creating peer');
       state.pc = new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
+      state.pc.oniceconnectionstatechange = ()=>{
+        log('ice state', state.pc.iceConnectionState);
+        if(['failed','closed'].includes(state.pc.iceConnectionState)){
+          if(!state.cancelled) disconnect();
+        }
+      };
       state.pc.onconnectionstatechange = ()=>{
         const st = state.pc.connectionState;
         log('pc state', st);
@@ -90,12 +101,25 @@
         try { const data = JSON.parse(e.data); if(data.type==='metrics' && data.payload){ updatePerf(data.payload); } } catch(_){ }
       };
       state.localStream.getTracks().forEach(t=> state.pc.addTrack(t, state.localStream));
-      const offer = await state.pc.createOffer();
+      const offer = await state.pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:true});
       await state.pc.setLocalDescription(offer);
+      // Wait for ICE gathering to complete (non-trickle) to avoid connectivity issues
+      setStatus('Gathering ICE');
+      await new Promise((resolve)=>{
+        if(state.pc.iceGatheringState === 'complete') return resolve();
+        const to = setTimeout(()=>{ resolve(); }, 3000);
+        state.pc.onicegatheringstatechange = ()=>{
+          if(state.pc.iceGatheringState === 'complete'){
+            clearTimeout(to); resolve();
+          }
+        };
+      });
       setStatus('Negotiating');
   const headers = {'Content-Type':'application/json'};
   if (authToken) headers['X-Auth-Token'] = authToken;
-      const r = await fetch('/webrtc/offer',{method:'POST', headers, body: JSON.stringify({sdp:offer.sdp, type:offer.type})});
+      // Use the possibly-updated localDescription (with ICE candidates)
+      const ld = state.pc.localDescription;
+      const r = await fetch('/webrtc/offer',{method:'POST', headers, body: JSON.stringify({sdp:ld.sdp, type:ld.type})});
       if(!r.ok){
         if(r.status===401 || r.status===403){
           setStatus('Unauthorized (check API key/token)');
@@ -107,7 +131,7 @@
         } else {
           setStatus('Offer failed '+r.status);
         }
-        els.connect.disabled=false; els.disconnect.disabled=true; return;
+        els.connect.disabled=false; els.disconnect.disabled=true; state.connecting=false; return;
       }
       const answer = await r.json();
       await state.pc.setRemoteDescription(answer);
@@ -115,7 +139,10 @@
     } catch(e){
       log('connect error', e);
       setStatus('Error');
-      els.connect.disabled = false;
+      els.connect.disabled = false; els.disconnect.disabled=true;
+    }
+    finally {
+      state.connecting = false;
     }
   }
 
@@ -129,9 +156,10 @@
   }
 
   async function disconnect(){
+    state.cancelled = true;
     if(state.metricsTimer){ clearInterval(state.metricsTimer); state.metricsTimer=null; }
     if(state.control){ try { state.control.onmessage=null; state.control.close(); }catch(_){} }
-    if(state.pc){ try { state.pc.ontrack=null; state.pc.onconnectionstatechange=null; state.pc.close(); }catch(_){} }
+    if(state.pc){ try { state.pc.ontrack=null; state.pc.onconnectionstatechange=null; state.pc.oniceconnectionstatechange=null; state.pc.onicegatheringstatechange=null; state.pc.close(); }catch(_){} }
     if(state.localStream){ try { state.localStream.getTracks().forEach(t=>t.stop()); } catch(_){} }
     // Clear media elements
     try { els.localVideo.srcObject = null; } catch(_){}
@@ -142,7 +170,7 @@
       if (state.authToken) hdrs['X-Auth-Token'] = state.authToken;
       await fetch('/webrtc/cleanup', {method:'POST', headers: hdrs});
     } catch(_){ }
-    state.pc=null; state.control=null; state.localStream=null; state.connected=false;
+    state.pc=null; state.control=null; state.localStream=null; state.connected=false; state.connecting=false;
     els.connect.disabled=false; els.disconnect.disabled=true; setStatus('Idle');
   }
 
