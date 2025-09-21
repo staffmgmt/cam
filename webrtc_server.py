@@ -164,6 +164,36 @@ async def webrtc_ice_config():
         return {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}], "error": str(e)}
 
 
+@router.get("/debug_state")
+async def webrtc_debug_state():
+    """Return simplified current peer connection debug info."""
+    try:
+        st = _peer_state
+        if st is None:
+            return {"active": False}
+        pc = st.pc
+        senders = getattr(pc, 'getSenders', lambda: [])()
+        def _sender_info(s):
+            try:
+                tr = s.track
+                return {
+                    "kind": getattr(tr, 'kind', None) if tr else None,
+                    "readyState": getattr(tr, 'readyState', None) if tr else None,
+                    "exists": tr is not None
+                }
+            except Exception:
+                return {"kind": None, "exists": False}
+        return {
+            "active": True,
+            "connectionState": getattr(pc, 'connectionState', None),
+            "iceConnectionState": getattr(pc, 'iceConnectionState', None),
+            "senders": [_sender_info(s) for s in senders],
+            "control_channel_ready": st.control_channel_ready,
+        }
+    except Exception as e:
+        return {"active": False, "error": str(e)}
+
+
 def _verify_token(token: str) -> bool:
     try:
         parts = token.split('.')
@@ -537,6 +567,10 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             except Exception:
                 pass
 
+    # Pre-create sendonly transceivers so the answer advertises outbound media m-lines
+    video_sender = pc.addTransceiver("video", direction="sendonly").sender
+    audio_sender = pc.addTransceiver("audio", direction="sendonly").sender
+
     # Set remote description
     try:
         desc = RTCSessionDescription(sdp=offer["sdp"], type=offer["type"])
@@ -544,35 +578,24 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
-    # Attach incoming tracks and re-add outbound processed tracks
-    # To ensure the outbound tracks are negotiated in the first SDP answer,
-    # wait briefly for the incoming track event(s) before creating the answer.
-    track_ready_video: asyncio.Event = asyncio.Event()
-    track_ready_audio: asyncio.Event = asyncio.Event()
+    # Attach incoming tracks and bind outbound processed tracks using replaceTrack
 
     @pc.on("track")
     def on_track(track):
         logger.info("Track received: %s", track.kind)
         if track.kind == "video":
             local = IncomingVideoTrack(track)
-            pc.addTrack(local)
             try:
-                track_ready_video.set()
-            except Exception:
-                pass
+                # Bind to the pre-announced sendonly transceiver
+                asyncio.create_task(video_sender.replaceTrack(local))
+            except Exception as e:
+                logger.error(f"video replaceTrack error: {e}")
         elif track.kind == "audio":
             local_a = IncomingAudioTrack(track)
-            pc.addTrack(local_a)
             try:
-                track_ready_audio.set()
-            except Exception:
-                pass
-
-    # Wait up to ~750ms for the video track to arrive so the outgoing track is present in SDP
-    try:
-        await asyncio.wait_for(track_ready_video.wait(), timeout=0.75)
-    except Exception:
-        pass
+                asyncio.create_task(audio_sender.replaceTrack(local_a))
+            except Exception as e:
+                logger.error(f"audio replaceTrack error: {e}")
 
     # Create answer
     answer = await pc.createAnswer()

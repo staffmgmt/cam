@@ -85,8 +85,9 @@
           console.warn('Token endpoint 404 - proceeding without token');
         }
       } catch(_){}
-      state.localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
-      els.localVideo.srcObject = state.localStream;
+  state.localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+  els.localVideo.srcObject = state.localStream;
+  try { els.localVideo.play && els.localVideo.play(); } catch(_) {}
       setStatus('Creating peer');
       let iceCfg = {iceServers:[{urls:['stun:stun.l.google.com:19302']}]};
       try {
@@ -117,6 +118,7 @@
             if (tryRelay) {
               state._relayFallbackTried = true;
               log('retrying with relay-only');
+              setStatus('Retrying with TURN relay');
               connect({forceRelay:true});
             }
           });
