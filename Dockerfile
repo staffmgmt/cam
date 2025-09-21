@@ -47,8 +47,17 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # Copy application source
 COPY . /app
 
-# Create directories for models and checkpoints (if not already present)
-RUN mkdir -p /app/models/liveportrait /app/models/rvc /app/models/hubert /app/models/rmvpe /app/checkpoints /tmp/cuda_cache
+# Create directories for models and checkpoints (if not already present) and make them writable at runtime
+RUN mkdir -p \
+        /app/models/liveportrait \
+        /app/models/rvc \
+        /app/models/hubert \
+        /app/models/rmvpe \
+        /app/checkpoints \
+        /app/.cache/huggingface/hub \
+        /app/.cache/huggingface/transformers \
+        /tmp/cuda_cache \
+    && chmod -R 777 /app/models /app/checkpoints /app/.cache /tmp/cuda_cache
 
 # Optional model downloader configuration (example URLs)
 ARG MIRAGE_DOWNLOAD_MODELS=1
@@ -65,6 +74,12 @@ EXPOSE 7860
 
 # Default port (Hugging Face Spaces injects PORT env; fallback to 7860)
 ENV PORT=7860
+
+# Configure cache locations to avoid writing to '/.cache' when HOME is unset by the platform
+ENV HOME=/app \
+    HF_HOME=/app/.cache/huggingface \
+    HUGGINGFACE_HUB_CACHE=/app/.cache/huggingface/hub \
+    TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers
 
 # Feature flags for safe model integration (can be overridden in Space settings)
 # Enable SCRFD and LivePortrait safe path by default for testing; landmark reenactor remains off.

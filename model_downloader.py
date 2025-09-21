@@ -26,6 +26,8 @@ except Exception:
         hf_hub_download = None
 
 LP_DIR = Path(__file__).parent / 'models' / 'liveportrait'
+HF_HOME = Path(os.getenv('HF_HOME', Path(__file__).parent / '.cache' / 'huggingface'))
+HF_HOME.mkdir(parents=True, exist_ok=True)
 
 
 def _download_requests(url: str, dest: Path, timeout: float = 30.0, retries: int = 3) -> bool:
@@ -62,7 +64,10 @@ def _download_hf(url: str, dest: Path) -> bool:
             filename = '/'.join(parts[4:])
             print(f"[downloader] (hf_hub) repo={repo_id} file={filename}")
             dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = hf_hub_download(repo_id=repo_id, filename=filename)
+            # Direct huggingface cache to writable location
+            os.environ.setdefault('HF_HOME', str(HF_HOME))
+            os.environ.setdefault('HUGGINGFACE_HUB_CACHE', str(HF_HOME / 'hub'))
+            tmp_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=str(HF_HOME / 'hub'))
             shutil.copyfile(tmp_path, dest)
             return True
     except Exception as e:
@@ -71,6 +76,11 @@ def _download_hf(url: str, dest: Path) -> bool:
 
 def _download(url: str, dest: Path):
     dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # Ensure parent dir is writable
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
     # Try requests first, then huggingface_hub
     ok = _download_requests(url, dest)
     if ok:
