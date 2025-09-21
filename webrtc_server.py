@@ -683,18 +683,11 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                 _peer_state.last_connection_state = pc.connectionState
         except Exception:
             pass
-        # Allow time for debugging; schedule delayed cleanup instead of immediate close
-        if pc.connectionState in ("failed", "closed"):
-            async def _delayed_close():
-                await asyncio.sleep(20)  # hold for 20s so /webrtc/debug_state can inspect
-                try:
-                    await pc.close()
-                except Exception:
-                    pass
+        # Immediately close failed connections to prevent resource leaks
+        if pc.connectionState == "failed":
             try:
-                if _peer_state is not None:
-                    if _peer_state.cleanup_task is None or _peer_state.cleanup_task.done():
-                        _peer_state.cleanup_task = asyncio.create_task(_delayed_close())
+                await pc.close()
+                logger.info("Closed failed peer connection")
             except Exception:
                 pass
 

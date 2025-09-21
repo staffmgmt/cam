@@ -442,18 +442,23 @@ class RealTimeAvatarPipeline:
                     pass
             
             # Get current optimization settings
-            opt_settings = self.optimizer.get_optimization_settings()
-            target_resolution = opt_settings.get('resolution', (512, 512))
+            if self.optimizer is not None:
+                opt_settings = self.optimizer.get_optimization_settings()
+                target_resolution = opt_settings.get('resolution', (512, 512))
+            else:
+                opt_settings = {}
+                target_resolution = self.config.video_resolution
             
             with self.video_lock:
                 # Resize frame based on adaptive resolution
                 frame_resized = cv2.resize(frame, target_resolution)
                 
                 # Use optimizer for frame processing
-                timestamp = time.time() * 1000
-                if not self.optimizer.process_frame(frame_resized, timestamp, "video"):
-                    # Frame dropped for optimization
-                    return frame_resized
+                if self.optimizer is not None:
+                    timestamp = time.time() * 1000
+                    if not self.optimizer.process_frame(frame_resized, timestamp, "video"):
+                        # Frame dropped for optimization
+                        return frame_resized
                 
                 # Detect face in current frame
                 t0 = time.time()
@@ -463,7 +468,7 @@ class RealTimeAvatarPipeline:
                     # If landmark reenactor is active, we can skip heavy detection and rely on its tracker
                     bbox = (0,0,self.config.video_resolution[0], self.config.video_resolution[1])
                     confidence = 1.0
-                elif self.safe_loader.scrfd_loaded:
+                elif self.safe_loader is not None and getattr(self.safe_loader, 'scrfd_loaded', False):
                     try:
                         sb = self.safe_loader.safe_detect_face(frame_resized)
                         if sb is not None:
@@ -473,7 +478,8 @@ class RealTimeAvatarPipeline:
                         bbox = None
                 if bbox is None:
                     bbox, confidence = self.face_detector.detect_face(frame_resized, frame_idx)
-                self._metrics.record_component_timing('face_detection', (time.time() - t0) * 1000.0)
+                if self._metrics is not None:
+                    self._metrics.record_component_timing('face_detection', (time.time() - t0) * 1000.0)
 
                 if self.reference_frame is None:
                     # No reference, keep camera as-is for stability until reference set
@@ -487,13 +493,14 @@ class RealTimeAvatarPipeline:
                         animated_frame = self.liveportrait.animate_face(
                             self.reference_frame, frame_resized
                         )
-                    elif self.safe_loader.liveportrait_loaded:
+                    elif self.safe_loader is not None and getattr(self.safe_loader, 'liveportrait_loaded', False):
                         animated_frame = self.safe_loader.safe_animate_face(
                             self.reference_frame, frame_resized
                         )
                     else:
                         animated_frame = frame_resized
-                    self._metrics.record_component_timing('animation', (time.time() - t1) * 1000.0)
+                    if self._metrics is not None:
+                        self._metrics.record_component_timing('animation', (time.time() - t1) * 1000.0)
                     
                     # Apply any post-processing with current quality settings
                     result_frame = self._post_process_frame(animated_frame, opt_settings)
@@ -508,10 +515,12 @@ class RealTimeAvatarPipeline:
                 # Record processing time
                 processing_time = (time.time() - start_time) * 1000
                 self.frame_times.append(processing_time)
-                self._metrics.record_video_timing(processing_time)
-                self._metrics.record_component_timing('face_detection', 0.0)  # placeholder hooks
-                self._metrics.record_component_timing('animation', 0.0)
-                self.optimizer.latency_optimizer.record_latency("video_total", processing_time)
+                if self._metrics is not None:
+                    self._metrics.record_video_timing(processing_time)
+                    self._metrics.record_component_timing('face_detection', 0.0)  # placeholder hooks
+                    self._metrics.record_component_timing('animation', 0.0)
+                if self.optimizer is not None:
+                    self.optimizer.latency_optimizer.record_latency("video_total", processing_time)
                 
                 return result_frame
                 
@@ -529,8 +538,9 @@ class RealTimeAvatarPipeline:
             
             with self.audio_lock:
                 # Use optimizer for audio processing
-                timestamp = time.time() * 1000
-                self.optimizer.process_frame(audio_chunk, timestamp, "audio")
+                if self.optimizer is not None:
+                    timestamp = time.time() * 1000
+                    self.optimizer.process_frame(audio_chunk, timestamp, "audio")
                 
                 # Convert voice using RVC
                 converted_audio = self.rvc.convert_voice(audio_chunk)
@@ -538,10 +548,12 @@ class RealTimeAvatarPipeline:
                 # Record processing time
                 processing_time = (time.time() - start_time) * 1000
                 self.audio_times.append(processing_time)
-                self._metrics.record_audio_timing(processing_time)
-                self._metrics.record_total_timing(processing_time)
-                self._metrics.record_component_timing('voice_processing', processing_time)
-                self.optimizer.latency_optimizer.record_latency("audio_total", processing_time)
+                if self._metrics is not None:
+                    self._metrics.record_audio_timing(processing_time)
+                    self._metrics.record_total_timing(processing_time)
+                    self._metrics.record_component_timing('voice_processing', processing_time)
+                if self.optimizer is not None:
+                    self.optimizer.latency_optimizer.record_latency("audio_total", processing_time)
                 
                 return converted_audio
                 

@@ -128,15 +128,31 @@
         try {
           const tr = ev.track;
           log('ontrack', tr && tr.kind, tr && tr.readyState, ev.streams && ev.streams.length);
-          setStatus('Remote track: '+(tr && tr.kind || 'unknown'));
-        } catch(_){ }
-        if(ev.streams && ev.streams[0]){
-          els.remoteVideo.srcObject = ev.streams[0];
-        } else if (ev.track) {
-          const ms = new MediaStream([ev.track]);
-          els.remoteVideo.srcObject = ms;
-        }
-        try { els.remoteVideo.play && els.remoteVideo.play(); } catch(_) {}
+          if (tr && tr.kind === 'video') {
+            // Only handle video track for remote video element
+            setStatus('Video track received');
+            let stream;
+            if(ev.streams && ev.streams[0]){
+              stream = ev.streams[0];
+            } else {
+              stream = new MediaStream([ev.track]);
+            }
+            // Avoid multiple srcObject assignments that cause play() interruptions
+            if (els.remoteVideo.srcObject !== stream) {
+              els.remoteVideo.srcObject = stream;
+              // Only call play() once after setting srcObject
+              setTimeout(() => {
+                try { 
+                  if (els.remoteVideo.readyState >= 2) { // HAVE_CURRENT_DATA
+                    els.remoteVideo.play().catch(e => log('play error', e.name)); 
+                  }
+                } catch(_) {}
+              }, 100);
+            }
+          } else if (tr && tr.kind === 'audio') {
+            setStatus('Audio track received');
+          }
+        } catch(e){ log('ontrack error', e); }
       };
       state.control = state.pc.createDataChannel('control');
       state.control.onopen = ()=>{
@@ -229,7 +245,12 @@
     if(state.localStream){ try { state.localStream.getTracks().forEach(t=>t.stop()); } catch(_){} }
     // Clear media elements
     try { els.localVideo.srcObject = null; } catch(_){}
-    try { els.remoteVideo.srcObject = null; } catch(_){}
+    try { 
+      if (els.remoteVideo.srcObject) {
+        els.remoteVideo.pause();
+        els.remoteVideo.srcObject = null; 
+      }
+    } catch(_){}
     // Best-effort server cleanup
     try {
       const hdrs = {};
