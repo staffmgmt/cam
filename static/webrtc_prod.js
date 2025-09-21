@@ -210,4 +210,23 @@
   }
   els.connect.addEventListener('click', connect);
   els.disconnect.addEventListener('click', disconnect);
+
+  // Auto-initialize on page load (idempotent). Helps when HTML cache hides the button.
+  (async ()=>{
+    try {
+      setStatus('Initializing pipeline...');
+      const r = await fetch('/initialize', {method:'POST'});
+      const j = await r.json().catch(()=>({}));
+      if (r.ok && j && (j.status==='success' || j.status==='already_initialized')){
+        setStatus(j.message || 'Initialized');
+      } else {
+        // Don’t spam status if it fails; user can still proceed to Connect
+        console.warn('auto-initialize response', r.status, j);
+        setStatus('Idle');
+      }
+    } catch(e){
+      // Silent fail; keep UI responsive
+      setStatus('Idle');
+    }
+  })();
 })();
