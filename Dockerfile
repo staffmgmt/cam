@@ -22,18 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \
     libopus0 \
-    libopus-dev \
     libsrtp2-1 \
     libsrtp2-dev \
-    libvpx7 \
-    libvpx-dev \
-    libavcodec58 \
-    libavformat58 \
-    libavutil56 \
-    libavdevice58 \
-    libavfilter7 \
-    libswscale5 \
-    libswresample3 \
     libsm6 \
     libxext6 \
     libgl1 \
@@ -61,7 +51,7 @@ COPY . /app
 RUN mkdir -p /app/models/liveportrait /app/models/rvc /app/models/hubert /app/models/rmvpe /app/checkpoints /tmp/cuda_cache
 
 # Optional model downloader configuration (example URLs)
-ARG MIRAGE_DOWNLOAD_MODELS=0
+ARG MIRAGE_DOWNLOAD_MODELS=1
 ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/appearance_feature_extractor.onnx"
 ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/motion_extractor.onnx"
 ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
@@ -77,10 +67,9 @@ EXPOSE 7860
 ENV PORT=7860
 
 # Feature flags for safe model integration (can be overridden in Space settings)
-# Enable SCRFD face detection by default for better reliability; keep LivePortrait safe path off initially.
-# Landmark reenactor is also off by default to avoid MediaPipe dependency issues
+# Enable SCRFD and LivePortrait safe path by default for testing; landmark reenactor remains off.
 ENV MIRAGE_ENABLE_SCRFD=1 \
-    MIRAGE_ENABLE_LIVEPORTRAIT=0 \
+    MIRAGE_ENABLE_LIVEPORTRAIT=1 \
     MIRAGE_ENABLE_LANDMARK_REENACTOR=0
 
 # Health check
