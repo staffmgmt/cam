@@ -134,21 +134,41 @@
             let stream;
             if(ev.streams && ev.streams[0]){
               stream = ev.streams[0];
+              log('Using provided stream:', stream.id, 'tracks:', stream.getTracks().length);
             } else {
               stream = new MediaStream([ev.track]);
+              log('Created new MediaStream:', stream.id);
             }
-            // Avoid multiple srcObject assignments that cause play() interruptions
-            if (els.remoteVideo.srcObject !== stream) {
-              els.remoteVideo.srcObject = stream;
-              // Only call play() once after setting srcObject
-              setTimeout(() => {
-                try { 
-                  if (els.remoteVideo.readyState >= 2) { // HAVE_CURRENT_DATA
-                    els.remoteVideo.play().catch(e => log('play error', e.name)); 
-                  }
-                } catch(_) {}
-              }, 100);
-            }
+            
+            // Force new srcObject every time to avoid conflicts
+            log('Setting srcObject on video element, current value:', els.remoteVideo.srcObject);
+            els.remoteVideo.srcObject = null;
+            els.remoteVideo.srcObject = stream;
+            log('srcObject set, waiting for loadeddata...');
+            
+            // Add more event listeners for debugging
+            els.remoteVideo.onloadstart = () => log('video: loadstart');
+            els.remoteVideo.onloadedmetadata = () => log('video: loadedmetadata', els.remoteVideo.videoWidth, 'x', els.remoteVideo.videoHeight);
+            els.remoteVideo.onloadeddata = () => {
+              log('video: loadeddata, attempting play()');
+              els.remoteVideo.play().catch(e => {
+                log('play error', e.name, e.message);
+                // Try playing again after a short delay
+                setTimeout(() => {
+                  log('Retry play() after error...');
+                  els.remoteVideo.play().catch(e2 => log('Retry play failed:', e2.name));
+                }, 100);
+              });
+            };
+            els.remoteVideo.onplaying = () => log('video: playing');
+            els.remoteVideo.onerror = (e) => log('video error:', e);
+            els.remoteVideo.onstalled = () => log('video: stalled');
+            
+            // Monitor video track state changes
+            tr.onended = () => log('video track ended');
+            tr.onmute = () => log('video track muted');
+            tr.onunmute = () => log('video track unmuted');
+            
           } else if (tr && tr.kind === 'audio') {
             setStatus('Audio track received');
           }

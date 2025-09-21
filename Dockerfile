@@ -82,10 +82,10 @@ ENV HOME=/app \
     TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers
 
 # Feature flags for safe model integration (can be overridden in Space settings)
-# Enable SCRFD and LivePortrait safe path by default for testing; landmark reenactor remains off.
+# Enable SCRFD and LivePortrait safe path by default for testing; try landmark reenactor if MediaPipe available.
 ENV MIRAGE_ENABLE_SCRFD=1 \
     MIRAGE_ENABLE_LIVEPORTRAIT=1 \
-    MIRAGE_ENABLE_LANDMARK_REENACTOR=0
+    MIRAGE_ENABLE_LANDMARK_REENACTOR=auto
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
