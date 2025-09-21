@@ -170,7 +170,11 @@ async def webrtc_debug_state():
     try:
         st = _peer_state
         if st is None:
-            return {"active": False}
+            return {
+                "active": False,
+                "last_connection_state": None,
+                "last_ice_state": None,
+            }
         pc = st.pc
         senders = getattr(pc, 'getSenders', lambda: [])()
         def _sender_info(s):
@@ -189,6 +193,8 @@ async def webrtc_debug_state():
             "iceConnectionState": getattr(pc, 'iceConnectionState', None),
             "senders": [_sender_info(s) for s in senders],
             "control_channel_ready": st.control_channel_ready,
+            "last_connection_state": st.last_connection_state,
+            "last_ice_state": st.last_ice_state,
         }
     except Exception as e:
         return {"active": False, "error": str(e)}
@@ -312,6 +318,9 @@ class PeerState:
     pc: RTCPeerConnection
     created: float
     control_channel_ready: bool = False
+    last_connection_state: Optional[str] = None
+    last_ice_state: Optional[str] = None
+    cleanup_task: Optional[asyncio.Task] = None
 
 
 # In-memory single peer (extend to dict for multi-user)
@@ -560,12 +569,34 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     @pc.on("connectionstatechange")
     async def on_state_change():
         logger.info("Peer connection state: %s", pc.connectionState)
-        # Allow transient 'disconnected' to recover; only close on failed/closed
+        try:
+            if _peer_state is not None:
+                _peer_state.last_connection_state = pc.connectionState
+        except Exception:
+            pass
+        # Allow time for debugging; schedule delayed cleanup instead of immediate close
         if pc.connectionState in ("failed", "closed"):
+            async def _delayed_close():
+                await asyncio.sleep(20)  # hold for 20s so /webrtc/debug_state can inspect
+                try:
+                    await pc.close()
+                except Exception:
+                    pass
             try:
-                await pc.close()
+                if _peer_state is not None:
+                    if _peer_state.cleanup_task is None or _peer_state.cleanup_task.done():
+                        _peer_state.cleanup_task = asyncio.create_task(_delayed_close())
             except Exception:
                 pass
+
+    @pc.on("iceconnectionstatechange")
+    async def on_ice_state_change():
+        logger.info("ICE connection state: %s", pc.iceConnectionState)
+        try:
+            if _peer_state is not None:
+                _peer_state.last_ice_state = pc.iceConnectionState
+        except Exception:
+            pass
 
     # Pre-create sendonly transceivers so the answer advertises outbound media m-lines
     video_sender = pc.addTransceiver("video", direction="sendonly").sender
