@@ -49,6 +49,12 @@ except Exception as e:
     MP_AVAILABLE = False
 
 try:
+    from liveportrait_engine import get_liveportrait_engine
+except Exception as e:
+    logger.warning(f"liveportrait_engine not available: {e}")
+    get_liveportrait_engine = None
+
+try:
     from realtime_optimizer import get_realtime_optimizer
 except Exception as e:
     logger.warning(f"realtime_optimizer not available: {e}")
@@ -69,62 +75,113 @@ class ModelConfig:
         self.use_tensorrt = True
         self.use_half_precision = True
 
-class FaceDetector:
+class SCRFDFaceDetector:
     """Optimized face detector using SCRFD"""
-    def __init__(self, config: ModelConfig):
+    
+    def __init__(self, config):
         self.config = config
         self.model = None
-        self.last_detection_frame = 0
-        self.last_bbox = None
-        self.last_confidence = 0.0
-        self.detection_count = 0
+        self.loaded = False
         
-    def load_model(self):
+    async def load_model(self):
         """Load SCRFD face detection model"""
+        if self.loaded:
+            return True
+        
         try:
+            logger.info("Loading SCRFD face detector...")
             import insightface
             from insightface.app import FaceAnalysis
             
-            logger.info("Loading SCRFD face detector...")
-            self.app = FaceAnalysis(name='buffalo_l')
-            self.app.prepare(ctx_id=0 if self.config.device == "cuda" else -1)
-            logger.info("Face detector loaded successfully")
+            # Initialize InsightFace with SCRFD
+            self.model = FaceAnalysis(providers=['CUDAExecutionProvider', 'CPUExecutionProvider'] if self.config.device == "cuda" else ['CPUExecutionProvider'])
+            self.model.prepare(ctx_id=0 if self.config.device == "cuda" else -1, det_size=(640, 640))
+            
+            self.loaded = True
+            logger.info("SCRFD face detector loaded successfully")
             return True
+            
         except Exception as e:
-            logger.error(f"Failed to load face detector: {e}")
+            logger.error(f"Failed to load SCRFD face detector: {e}")
             return False
     
-    def detect_face(self, frame: np.ndarray, frame_idx: int) -> Tuple[Optional[np.ndarray], float]:
-        """Detect face with interval-based optimization"""
+    def detect_faces(self, image: np.ndarray) -> list:
+        """Detect faces in image and return bounding boxes with landmarks"""
+        if not self.loaded or self.model is None:
+            return []
+        
         try:
-            # Use previous bbox if within detection interval and confidence is good
-            if (frame_idx - self.last_detection_frame < self.config.detect_interval and 
-                self.last_confidence >= self.config.face_redetect_threshold and 
-                self.last_bbox is not None):
-                return self.last_bbox, self.last_confidence
+            # Convert BGR to RGB for InsightFace
+            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if len(image.shape) == 3 else image
             
-            # Run detection
-            faces = self.app.get(frame)
+            # Detect faces
+            faces = self.model.get(rgb_image)
             
-            if len(faces) > 0:
-                # Use highest confidence face
-                face = max(faces, key=lambda x: x.det_score)
-                bbox = face.bbox.astype(int)
+            results = []
+            for face in faces:
+                # Extract bounding box and landmarks
+                bbox = face.bbox.astype(int)  # [x1, y1, x2, y2]
+                landmarks = face.kps.astype(int)  # 5 landmarks
                 confidence = face.det_score
                 
-                self.last_bbox = bbox
-                self.last_confidence = confidence
-                self.last_detection_frame = frame_idx
-                
-                return bbox, confidence
-            else:
-                # Force redetection next frame if no face found
-                self.last_confidence = 0.0
-                return None, 0.0
-                
+                results.append({
+                    'bbox': bbox,
+                    'landmarks': landmarks,
+                    'confidence': confidence
+                })
+            
+            return results
+            
         except Exception as e:
-            logger.error(f"Face detection error: {e}")
-            return None, 0.0
+            logger.error(f"Face detection failed: {e}")
+            return []
+    
+    def crop_and_align_face(self, image: np.ndarray, face_info: dict, target_size: tuple = (512, 512)) -> Optional[np.ndarray]:
+        """Crop and align face for LivePortrait input"""
+        try:
+            bbox = face_info['bbox']
+            landmarks = face_info['landmarks']
+            
+            # Extract face region with padding
+            x1, y1, x2, y2 = bbox
+            h, w = image.shape[:2]
+            
+            # Add padding around face
+            padding = 0.3
+            face_w, face_h = x2 - x1, y2 - y1
+            pad_w, pad_h = int(face_w * padding), int(face_h * padding)
+            
+            # Expand bounding box
+            x1 = max(0, x1 - pad_w)
+            y1 = max(0, y1 - pad_h)
+            x2 = min(w, x2 + pad_w)
+            y2 = min(h, y2 + pad_h)
+            
+            # Crop face region
+            face_crop = image[y1:y2, x1:x2]
+            
+            if face_crop.size == 0:
+                return None
+            
+            # Resize to target size
+            face_aligned = cv2.resize(face_crop, target_size)
+            
+            return face_aligned
+            
+        except Exception as e:
+            logger.error(f"Face crop and alignment failed: {e}")
+            return None
+    
+    def get_best_face(self, faces: list) -> Optional[dict]:
+        """Get the best face from detection results"""
+        if not faces:
+            return None
+        
+        # Sort by confidence and size
+        best_face = max(faces, key=lambda f: f['confidence'] * ((f['bbox'][2] - f['bbox'][0]) * (f['bbox'][3] - f['bbox'][1])))
+        
+        return best_face
+
 
 class LivePortraitModel:
     """LivePortrait face animation model"""
@@ -285,10 +342,21 @@ class RealTimeAvatarPipeline:
     """Main real-time AI avatar pipeline"""
     def __init__(self):
         self.config = ModelConfig()
-        self.face_detector = FaceDetector(self.config)
+        
+        # Face detection systems
+        self.face_detector = SCRFDFaceDetector(self.config)  # Use SCRFD instead of basic detector
+        self.scrfd_detector = SCRFDFaceDetector(self.config)  # Explicit SCRFD instance
+        
+        # Animation engines
         self.liveportrait = LivePortraitModel(self.config)
+        self.liveportrait_engine = get_liveportrait_engine() if get_liveportrait_engine else None
+        
+        # Voice conversion
         self.rvc = RVCVoiceConverter(self.config)
+        
+        # Safe model loader
         self.safe_loader = get_safe_model_loader()
+        
         # Auto-enable landmark reenactor if available unless explicitly disabled via env
         lm_env = os.getenv("MIRAGE_ENABLE_LANDMARK_REENACTOR", "auto").lower()
         self.landmark_mode = (
@@ -305,9 +373,14 @@ class RealTimeAvatarPipeline:
         self.video_buffer = deque(maxlen=5)
         self.audio_buffer = deque(maxlen=10)
         
-        # Reference frames
+        # Reference frames and appearance features
         self.reference_frame = None
+        self.reference_appearance_features = None
         self.current_face_bbox = None
+        
+        # Animation method preference
+        self.use_liveportrait = True  # Prefer LivePortrait over landmark reenactor
+        self.liveportrait_ready = False
         
         # Performance tracking
         self.frame_times = deque(maxlen=100)
@@ -327,7 +400,25 @@ class RealTimeAvatarPipeline:
         """Initialize all models"""
         logger.info("Initializing real-time avatar pipeline...")
         
-        # Face detector load may be synchronous; run in executor to avoid blocking loop
+        # Initialize SCRFD face detection
+        scrfd_ok = await self.scrfd_detector.load_model()
+        if scrfd_ok:
+            logger.info("SCRFD face detection ready")
+        
+        # Initialize LivePortrait ONNX engine
+        if self.liveportrait_engine:
+            liveportrait_ok = self.liveportrait_engine.load_models()
+            if liveportrait_ok:
+                self.liveportrait_ready = True
+                logger.info("LivePortrait ONNX engine ready")
+            else:
+                logger.warning("LivePortrait ONNX engine failed to load - falling back to landmark reenactor")
+                self.use_liveportrait = False
+        else:
+            logger.warning("LivePortrait engine not available - using landmark reenactor")
+            self.use_liveportrait = False
+        
+        # Initialize legacy components if needed
         loop = asyncio.get_running_loop()
         try:
             fd_ok = await loop.run_in_executor(None, self.face_detector.load_model)
@@ -348,17 +439,89 @@ class RealTimeAvatarPipeline:
                     return False
                 scrfd_task = _false()
                 lp_safe_task = _false()
-
-            results = await asyncio.gather(lp_task, rvc_task, scrfd_task, lp_safe_task, return_exceptions=True)
-            lp_ok = results[0] is True
-            rvc_ok = results[1] is True
-            scrfd_safe_ok = results[2] is True
-            lp_safe_ok = results[3] is True
-            logger.info(
-                f"Loaded components - FaceDetector: {fd_ok}, LivePortrait: {lp_ok}, RVC: {rvc_ok}, SCRFD(safe): {scrfd_safe_ok}, LivePortrait(safe): {lp_safe_ok}, LandmarkReenactor: {self.landmark_reenactor is not None}"
+            
+            # Run all tasks concurrently
+            results = await asyncio.gather(
+                lp_task, rvc_task, scrfd_task, lp_safe_task,
+                return_exceptions=True
             )
-
-            # Relaxed success criteria: proceed if ANY core component is available
+            
+            lp_ok, rvc_ok, scrfd_safe_ok, lp_safe_ok = results
+            
+            # Log results
+            if isinstance(lp_ok, Exception):
+                logger.error(f"LivePortrait (legacy) loading failed: {lp_ok}")
+                lp_ok = False
+            
+            if isinstance(rvc_ok, Exception):
+                logger.error(f"RVC loading failed: {rvc_ok}")
+                rvc_ok = False
+                
+            logger.info(f"Model loading results: FD={fd_ok}, LP={lp_ok}, RVC={rvc_ok}, SCRFD_safe={scrfd_safe_ok}, LP_safe={lp_safe_ok}")
+            
+            # Mark as loaded if at least face detection works
+            self.loaded = scrfd_ok or fd_ok
+            
+            if self.loaded:
+                logger.info("Avatar pipeline initialized successfully")
+                return True
+            else:
+                logger.error("Avatar pipeline initialization failed - no face detection available")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Model loading failed: {e}")
+            # Still mark as loaded if we have basic functionality
+            self.loaded = scrfd_ok
+            return self.loaded
+    
+    def set_reference_frame(self, frame: np.ndarray) -> bool:
+        """Set reference frame for avatar animation"""
+        try:
+            logger.info(f"Setting reference frame: {frame.shape}")
+            
+            # Detect face in reference frame using SCRFD
+            if hasattr(self, 'scrfd_detector') and self.scrfd_detector.loaded:
+                faces = self.scrfd_detector.detect_faces(frame)
+                if faces:
+                    best_face = self.scrfd_detector.get_best_face(faces)
+                    if best_face:
+                        # Crop and align face for LivePortrait
+                        aligned_face = self.scrfd_detector.crop_and_align_face(frame, best_face, target_size=(512, 512))
+                        if aligned_face is not None:
+                            frame = aligned_face
+                            logger.info("Using SCRFD-aligned face for reference")
+            
+            # Store reference frame
+            self.reference_frame = frame.copy()
+            
+            # Extract appearance features using LivePortrait if available
+            if self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready:
+                appearance_features = self.liveportrait_engine.extract_appearance_features(frame)
+                if appearance_features is not None:
+                    self.reference_appearance_features = appearance_features
+                    logger.info("LivePortrait appearance features extracted successfully")
+                    return True
+                else:
+                    logger.warning("LivePortrait appearance extraction failed - falling back to landmark reenactor")
+                    self.use_liveportrait = False
+            
+            # Fallback to landmark reenactor if available
+            if self.landmark_reenactor is not None:
+                success = self.landmark_reenactor.set_reference(frame)
+                if success:
+                    logger.info("Landmark reenactor reference set successfully")
+                    return True
+                else:
+                    logger.warning("Landmark reenactor reference setting failed")
+            
+            # Final fallback - just store the frame
+            logger.info("Using simple frame storage as fallback")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to set reference frame: {e}")
+            return False
             if fd_ok or lp_ok or lp_safe_ok or rvc_ok or (self.landmark_reenactor is not None):
                 self.loaded = True
                 logger.info("Pipeline initialization successful (relaxed criteria)")
@@ -412,9 +575,74 @@ class RealTimeAvatarPipeline:
         start_time = time.time()
         
         try:
-            # PRODUCTION FALLBACK: If no reference, show live camera
+            # Check if we have a reference
             if self.reference_frame is None:
                 print("[AVATAR] No reference image - showing live camera feed")
+                return frame
+            
+            # LivePortrait neural animation (preferred method)
+            if self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready and self.reference_appearance_features is not None:
+                try:
+                    # Detect and align face for motion extraction
+                    driving_frame = frame
+                    
+                    # Use SCRFD to detect face in driving frame
+                    if hasattr(self, 'scrfd_detector') and self.scrfd_detector.loaded:
+                        faces = self.scrfd_detector.detect_faces(frame)
+                        if faces:
+                            best_face = self.scrfd_detector.get_best_face(faces)
+                            if best_face:
+                                aligned_face = self.scrfd_detector.crop_and_align_face(frame, best_face, target_size=(512, 512))
+                                if aligned_face is not None:
+                                    driving_frame = aligned_face
+                    
+                    # Generate animated frame using LivePortrait
+                    animated_frame = self.liveportrait_engine.animate_frame(driving_frame)
+                    
+                    if animated_frame is not None:
+                        # Resize to match input frame size
+                        if animated_frame.shape[:2] != frame.shape[:2]:
+                            animated_frame = cv2.resize(animated_frame, (frame.shape[1], frame.shape[0]))
+                        
+                        self._update_stats("liveportrait", start_time)
+                        print(f"[AVATAR] LivePortrait animation: {animated_frame.shape}")
+                        return animated_frame
+                    else:
+                        print("[AVATAR] LivePortrait animation failed - falling back")
+                        
+                except Exception as e:
+                    print(f"[AVATAR] LivePortrait error: {e}")
+                    logger.error(f"LivePortrait animation error: {e}")
+            
+            # Landmark reenactor fallback
+            if self.landmark_reenactor is not None:
+                try:
+                    animated_frame = self.landmark_reenactor.reenact(frame)
+                    if animated_frame is not None and animated_frame.shape == frame.shape:
+                        self._update_stats("landmark", start_time)
+                        print(f"[AVATAR] Landmark reenactor animation: {animated_frame.shape}")
+                        return animated_frame
+                except Exception as e:
+                    print(f"[AVATAR] Landmark reenactor error: {e}")
+                    logger.error(f"Landmark reenactor error: {e}")
+            
+            # Simple alpha-blend fallback (production-ready)
+            try:
+                h, w = frame.shape[:2]
+                ref_resized = cv2.resize(self.reference_frame, (w, h))
+                # Simple alpha blend to create basic avatar effect
+                alpha = 0.7
+                result = cv2.addWeighted(ref_resized, alpha, frame, 1-alpha, 0)
+                self._update_stats("simple_blend", start_time)
+                print(f"[AVATAR] Production fallback alpha blend: {ref_resized.shape} + {frame.shape} -> {result.shape}")
+                return result
+            except Exception as e:
+                print(f"[AVATAR] Fallback blend failed: {e}")
+                return frame
+                
+        except Exception as e:
+            logger.error(f"Video frame processing error: {e}")
+            return frame
                 return frame
             
             # PRODUCTION FALLBACK: Simple face swap without complex detection

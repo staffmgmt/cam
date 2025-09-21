@@ -92,27 +92,64 @@ def _download(url: str, dest: Path):
 
 
 def maybe_download() -> bool:
-    if os.getenv('MIRAGE_DOWNLOAD_MODELS', '0').lower() not in ('1', 'true', 'yes', 'on'):
+    if os.getenv('MIRAGE_DOWNLOAD_MODELS', '1').lower() not in ('1', 'true', 'yes', 'on'):
         print('[downloader] MIRAGE_DOWNLOAD_MODELS disabled')
         return False
+    
     app_url = os.getenv('MIRAGE_LP_APPEARANCE_URL')
     motion_url = os.getenv('MIRAGE_LP_MOTION_URL')
     success = True
+    
+    # Download LivePortrait appearance extractor
     if app_url:
-        try:
-            _download(app_url, LP_DIR / 'appearance_feature_extractor.onnx')
-        except Exception as e:
-            print(f"[downloader] appearance download failed: {e}")
-            success = False
+        dest = LP_DIR / 'appearance_feature_extractor.onnx'
+        if not dest.exists():
+            try:
+                print(f'[downloader] Downloading appearance extractor...')
+                _download(app_url, dest)
+                print(f'[downloader] ✅ Downloaded: {dest}')
+            except Exception as e:
+                print(f'[downloader] ❌ Failed to download appearance extractor: {e}')
+                success = False
+        else:
+            print(f'[downloader] ✅ Appearance extractor already exists: {dest}')
+    
+    # Download LivePortrait motion extractor
     if motion_url:
-        try:
-            _download(motion_url, LP_DIR / 'motion_extractor.onnx')
-        except Exception as e:
-            print(f"[downloader] motion download failed: {e}")
-            # motion is optional; don't flip success
+        dest = LP_DIR / 'motion_extractor.onnx'
+        if not dest.exists():
+            try:
+                print(f'[downloader] Downloading motion extractor...')
+                _download(motion_url, dest)
+                print(f'[downloader] ✅ Downloaded: {dest}')
+            except Exception as e:
+                print(f'[downloader] ❌ Failed to download motion extractor: {e}')
+                success = False
+        else:
+            print(f'[downloader] ✅ Motion extractor already exists: {dest}')
+    
+    # Download additional models if URLs provided
+    generator_url = os.getenv('MIRAGE_LP_GENERATOR_URL')
+    if generator_url:
+        dest = LP_DIR / 'generator.onnx'
+        if not dest.exists():
+            try:
+                print(f'[downloader] Downloading generator model...')
+                _download(generator_url, dest)
+                print(f'[downloader] ✅ Downloaded: {dest}')
+            except Exception as e:
+                print(f'[downloader] ⚠️ Failed to download generator (optional): {e}')
+                # Don't mark as failure since generator is optional
+    
     return success
 
 
 if __name__ == '__main__':
-    ok = maybe_download()
-    print(f'[downloader] Done (ok={ok})')
+    """Direct execution for debugging"""
+    print("=== LivePortrait Model Downloader ===")
+    success = maybe_download()
+    if success:
+        print("✅ All required models downloaded successfully")
+    else:
+        print("❌ Some model downloads failed")
+        sys.exit(1)
