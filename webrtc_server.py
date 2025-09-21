@@ -642,30 +642,13 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
-    # Helper to support both async and sync replaceTrack implementations
-    async def _maybe_replace(sender, track):
-        try:
-            res = sender.replaceTrack(track)
-            if asyncio.iscoroutine(res):
-                await res
-        except Exception as _e:
-            raise
-
     # Create an outbound video track immediately so the answer includes a sending m-line
     try:
         outbound_video = OutboundVideoTrack()
-        video_sender = pc.addTransceiver("video", direction="sendonly").sender
-        await _maybe_replace(video_sender, outbound_video)
+        pc.addTrack(outbound_video)
     except Exception as e:
         logger.error(f"Failed to set up outbound video: {e}")
         raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
-
-    # For audio, pre-announce sendonly too to keep symmetry
-    try:
-        audio_sender = pc.addTransceiver("audio", direction="sendonly").sender
-    except Exception as e:
-        logger.error(f"Failed to create audio transceiver: {e}")
-        raise HTTPException(status_code=500, detail=f"audio_transceiver_setup: {e}")
 
     @pc.on("track")
     def on_track(track):
@@ -679,9 +662,9 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         elif track.kind == "audio":
             local_a = IncomingAudioTrack(track)
             try:
-                asyncio.create_task(_maybe_replace(audio_sender, local_a))
+                pc.addTrack(local_a)
             except Exception as e:
-                logger.error(f"audio replaceTrack error: {e}")
+                logger.error(f"audio addTrack error: {e}")
 
     # Create answer with error surfacing
     try:
@@ -689,9 +672,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     except Exception as e:
         logger.error(f"createAnswer error: {e}")
         raise HTTPException(status_code=500, detail=f"createAnswer: {e}")
-    # Prefer VP8 by default for broader compatibility; can override via MIRAGE_PREFERRED_VIDEO_CODEC
-    patched_sdp = _prefer_codec(answer.sdp, 'video', os.getenv('MIRAGE_PREFERRED_VIDEO_CODEC', 'VP8'))
-    answer = RTCSessionDescription(sdp=patched_sdp, type=answer.type)
+    # Avoid SDP munging to reduce negotiation fragility
     try:
         await pc.setLocalDescription(answer)
     except Exception as e:
