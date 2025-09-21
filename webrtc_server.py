@@ -38,7 +38,7 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Header
 
 try:
-    from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCConfiguration, RTCIceServer
+    from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCConfiguration, RTCIceServer, VideoStreamTrack
     from aiortc.contrib.media import MediaBlackhole
     import av  # noqa: F401 (required by aiortc for codecs)
     AIORTC_AVAILABLE = True
@@ -387,7 +387,7 @@ class IncomingVideoTrack(MediaStreamTrack):
         return new_frame
 
 
-class OutboundVideoTrack(MediaStreamTrack):
+class OutboundVideoTrack(VideoStreamTrack):
     """Outbound track that sends black frames until a real source is attached.
     Once set_source is called with a MediaStreamTrack, it relays frames from that track.
     """
@@ -419,12 +419,8 @@ class OutboundVideoTrack(MediaStreamTrack):
             await asyncio.sleep(delay)
         self._last_ts = time.time()
         frame = np.zeros((self._height, self._width, 3), dtype=np.uint8)
-        try:
-            import av as _av
-            vframe = _av.VideoFrame.from_ndarray(frame, format="bgr24")
-        except Exception:
-            # Minimal fallback: construct via base class helper if available
-            vframe = MediaStreamTrack().from_ndarray(frame, format="bgr24")  # type: ignore[attr-defined]
+        import av as _av
+        vframe = _av.VideoFrame.from_ndarray(frame, format="bgr24")
         return vframe
 
 
@@ -647,15 +643,20 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
     # Create an outbound video track immediately so the answer includes a sending m-line
-    outbound_video = OutboundVideoTrack()
-    video_sender = pc.addTransceiver("video", direction="sendonly").sender
     try:
+        outbound_video = OutboundVideoTrack()
+        video_sender = pc.addTransceiver("video", direction="sendonly").sender
         await video_sender.replaceTrack(outbound_video)
     except Exception as e:
-        logger.error(f"Failed to bind outbound video track: {e}")
+        logger.error(f"Failed to set up outbound video: {e}")
+        raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
 
-    # For audio, we keep pass-through upon arrival; pre-announce sendonly too to keep symmetry
-    audio_sender = pc.addTransceiver("audio", direction="sendonly").sender
+    # For audio, pre-announce sendonly too to keep symmetry
+    try:
+        audio_sender = pc.addTransceiver("audio", direction="sendonly").sender
+    except Exception as e:
+        logger.error(f"Failed to create audio transceiver: {e}")
+        raise HTTPException(status_code=500, detail=f"audio_transceiver_setup: {e}")
 
     @pc.on("track")
     def on_track(track):
@@ -673,12 +674,20 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             except Exception as e:
                 logger.error(f"audio replaceTrack error: {e}")
 
-    # Create answer
-    answer = await pc.createAnswer()
+    # Create answer with error surfacing
+    try:
+        answer = await pc.createAnswer()
+    except Exception as e:
+        logger.error(f"createAnswer error: {e}")
+        raise HTTPException(status_code=500, detail=f"createAnswer: {e}")
     # Prefer VP8 by default for broader compatibility; can override via MIRAGE_PREFERRED_VIDEO_CODEC
     patched_sdp = _prefer_codec(answer.sdp, 'video', os.getenv('MIRAGE_PREFERRED_VIDEO_CODEC', 'VP8'))
     answer = RTCSessionDescription(sdp=patched_sdp, type=answer.type)
-    await pc.setLocalDescription(answer)
+    try:
+        await pc.setLocalDescription(answer)
+    except Exception as e:
+        logger.error(f"setLocalDescription error: {e}")
+        raise HTTPException(status_code=500, detail=f"setLocalDescription: {e}")
 
     _peer_state = PeerState(pc=pc, created=time.time())
 

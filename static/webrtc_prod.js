@@ -184,15 +184,18 @@
       const ld = state.pc.localDescription;
       const r = await fetch('/webrtc/offer',{method:'POST', headers, body: JSON.stringify({sdp:ld.sdp, type:ld.type})});
       if(!r.ok){
+        let bodyText = '';
+        try { bodyText = await r.text(); } catch(_){ }
         if(r.status===401 || r.status===403){
           setStatus('Unauthorized (check API key/token)');
         } else if (r.status===404){
           setStatus('Offer endpoint not found (server not exposing /webrtc)');
         } else if (r.status===503){
-          try { const txt = await r.text(); setStatus('Offer failed 503'); console.warn('503 body', txt); }
+          try { const txt = bodyText || ''; setStatus('Offer failed 503'); console.warn('503 body', txt); }
           catch(_){ setStatus('Offer failed 503'); }
         } else {
           setStatus('Offer failed '+r.status);
+          console.warn('offer error body', bodyText);
         }
         els.connect.disabled=false; els.disconnect.disabled=true; state.connecting=false; return;
       }
