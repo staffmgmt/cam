@@ -197,6 +197,28 @@ If the Space shows a perpetual "Restarting" badge:
 
 If problems persist, capture the Container log stack trace and open an issue.
 
+## Enable ONNX Model Downloads (Safe LivePortrait)
+
+To pull LivePortrait ONNX files into the container at runtime and enable the safe animation path:
+
+1) Set these Space secrets/variables in the Settings → Variables panel:
+
+- `MIRAGE_ENABLE_SCRFD=1` (already default in Dockerfile)
+- `MIRAGE_ENABLE_LIVEPORTRAIT=1`
+- `MIRAGE_DOWNLOAD_MODELS=1`
+- `MIRAGE_LP_APPEARANCE_URL=https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/appearance_feature_extractor.onnx`
+- `MIRAGE_LP_MOTION_URL=https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/motion_extractor.onnx` (optional)
+
+2) Restart the Space. The server will download models in the background on startup, and also sync once when you hit "Initialize AI Pipeline".
+
+3) Check `/pipeline_status` or the in-UI metrics to see:
+- `ai_pipeline.animator_available: true`
+- `ai_pipeline.reference_set: true` (after uploading a reference)
+
+Notes:
+- The safe loader uses onnxruntime-gpu if available, otherwise CPU. This path provides a visible transformation placeholder and validates end-to-end integration.
+- Keep model URLs only to assets you have permission to download.
+
 ## Model Weights (Planned Voice Pipeline)
 The codebase now contains placeholder directories for upcoming audio feature extraction and conversion models.
 

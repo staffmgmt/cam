@@ -15,6 +15,10 @@ from metrics import metrics as _metrics_singleton, Metrics
 from config import config
 from voice_processor import voice_processor
 from avatar_pipeline import get_pipeline
+try:
+    import model_downloader  # optional runtime downloader
+except Exception:
+    model_downloader = None
 
 app = FastAPI(title="Mirage Real-time AI Avatar System")
 
@@ -92,6 +96,13 @@ async def initialize_pipeline():
         return {"status": "already_initialized", "message": "Pipeline already loaded"}
     
     try:
+        # Best-effort: download models first if enabled via env
+        if model_downloader is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, model_downloader.maybe_download)
+            except Exception:
+                pass
         success = await pipeline.initialize()
         if success:
             pipeline_initialized = True
@@ -303,6 +314,13 @@ async def log_config():
         "gpu_name": gpu_name,
     }
     print("[startup]", startup_line)
+    # Kick off non-blocking model download in background (optional)
+    if model_downloader is not None:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, model_downloader.maybe_download)
+        except Exception:
+            pass
 
 
 # Note: The Dockerfile / README launch with: uvicorn app:app --port 7860
