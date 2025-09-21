@@ -148,7 +148,7 @@
       setStatus('Gathering ICE');
       await new Promise((resolve)=>{
         if(state.pc.iceGatheringState === 'complete') return resolve();
-        const to = setTimeout(()=>{ resolve(); }, 3000);
+        const to = setTimeout(()=>{ resolve(); }, 7000);
         state.pc.onicegatheringstatechange = ()=>{
           if(state.pc.iceGatheringState === 'complete'){
             clearTimeout(to); resolve();

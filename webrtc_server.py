@@ -98,10 +98,14 @@ router = APIRouter(prefix="/webrtc", tags=["webrtc"])
 API_KEY = os.getenv("MIRAGE_API_KEY")
 REQUIRE_API_KEY = os.getenv("MIRAGE_REQUIRE_API_KEY", "0").strip().lower() in {"1","true","yes","on"}
 TOKEN_TTL_SECONDS = int(os.getenv("MIRAGE_TOKEN_TTL", "300"))  # 5 minutes default
-STUN_URLS = os.getenv("MIRAGE_STUN_URLS", "stun:stun.l.google.com:19302")
+STUN_URLS = os.getenv(
+    "MIRAGE_STUN_URLS",
+    "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun2.l.google.com:19302,stun:stun3.l.google.com:19302,stun:stun4.l.google.com:19302,stun:stun.stunprotocol.org:3478"
+)
 TURN_URL = os.getenv("MIRAGE_TURN_URL")
 TURN_USER = os.getenv("MIRAGE_TURN_USER")
 TURN_PASS = os.getenv("MIRAGE_TURN_PASS")
+METERED_API_KEY = os.getenv("MIRAGE_METERED_API_KEY")
 
 
 def _b64u(data: bytes) -> str:
@@ -130,7 +134,8 @@ async def webrtc_ping():
         "router": True,
         "aiortc_available": AIORTC_AVAILABLE,
         "aiortc_error": None if AIORTC_AVAILABLE else AIORTC_IMPORT_ERROR,
-        "turn_configured": bool(TURN_URL and TURN_USER and TURN_PASS)
+        "turn_configured": bool(TURN_URL and TURN_USER and TURN_PASS),
+        "metered_configured": bool(METERED_API_KEY)
     }
 
 # Minimal root to confirm router is mounted
@@ -200,6 +205,28 @@ def _ice_configuration() -> RTCConfiguration:
     # Optional TURN
     if TURN_URL and TURN_USER and TURN_PASS:
         servers.append(RTCIceServer(urls=[TURN_URL], username=TURN_USER, credential=TURN_PASS))
+    # Optional Metered.ca ephemeral TURN using API key
+    if METERED_API_KEY:
+        try:
+            from urllib.request import urlopen
+            from urllib.parse import urlencode
+            import json as _json
+            # Global endpoint that returns iceServers list
+            url = f"https://global.relay.metered.ca/turn?{urlencode({'apiKey': METERED_API_KEY})}"
+            with urlopen(url, timeout=5) as resp:  # nosec - fixed provider URL
+                data = _json.loads(resp.read().decode('utf-8'))
+            ice_list = data.get('iceServers') or []
+            for s in ice_list:
+                urls = s.get('urls')
+                if not urls:
+                    continue
+                if isinstance(urls, str):
+                    urls = [urls]
+                username = s.get('username')
+                credential = s.get('credential')
+                servers.append(RTCIceServer(urls=urls, username=username, credential=credential))
+        except Exception as e:
+            logger.debug(f"Metered ICE fetch failed: {e}")
     return RTCConfiguration(iceServers=servers)
 
 
