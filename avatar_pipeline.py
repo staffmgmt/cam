@@ -643,56 +643,85 @@ class RealTimeAvatarPipeline:
         except Exception as e:
             logger.error(f"Video frame processing error: {e}")
             return frame
-                return frame
-            
-            # PRODUCTION FALLBACK: Simple face swap without complex detection
-            # Just blend reference with current frame for immediate visual feedback
+    
+    def _update_stats(self, method: str, start_time: float = None):
+        """Update performance statistics"""
+        if start_time is not None:
+            elapsed = time.time() - start_time
+            self.frame_times.append(elapsed)
+        
+        if self._metrics:
             try:
-                h, w = frame.shape[:2]
-                ref_resized = cv2.resize(self.reference_frame, (w, h))
-                # Simple alpha blend to create basic avatar effect
-                alpha = 0.7
-                result = cv2.addWeighted(ref_resized, alpha, frame, 1-alpha, 0)
-                print(f"[AVATAR] Production fallback alpha blend: {ref_resized.shape} + {frame.shape} -> {result.shape}")
-                return result
-            except Exception as e:
-                print(f"[AVATAR] Fallback blend failed: {e}")
-                return frame
-
-            # Original complex pipeline below (currently causing issues)
-            # If models aren't loaded yet:
-            if not self.loaded:
-                # If user set a reference, show it as a visible confirmation until animator is ready
-                if self.reference_frame is not None:
-                    try:
-                        h, w = frame.shape[:2]
-                        ref = cv2.resize(self.reference_frame, (w, h))
-                        return ref
-                    except Exception:
-                        return frame
-                # Otherwise, keep pass-through camera preview
-                return frame
-
-            # If loaded but no animator available yet, and reference exists, display reference image
-            try:
-                animator_available = (
-                    self.liveportrait.loaded or
-                    getattr(self.safe_loader, 'liveportrait_loaded', False) or
-                    (self.landmark_reenactor is not None)
-                )
+                self._metrics.record_frame_processing(method, elapsed if start_time else 0.0)
             except Exception:
-                animator_available = False
-            if not animator_available and self.reference_frame is not None:
-                try:
-                    h, w = frame.shape[:2]
-                    return cv2.resize(self.reference_frame, (w, h))
-                except Exception:
-                    pass
+                pass
+    
+    def process_audio_chunk(self, audio_chunk: np.ndarray) -> np.ndarray:
+        """Process audio chunk with voice conversion"""
+        start_time = time.time()
+        
+        try:
+            with self.audio_lock:
+                # Add to buffer
+                self.audio_buffer.append(audio_chunk)
+                
+                # Process with RVC if available
+                if self.rvc and self.rvc.loaded:
+                    result = self.rvc.convert_voice(audio_chunk)
+                else:
+                    result = audio_chunk  # Pass through
+                
+                # Update performance stats
+                elapsed = time.time() - start_time
+                self.audio_times.append(elapsed)
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"Audio processing error: {e}")
+            return audio_chunk
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+                def get_performance_stats(self) -> Dict[str, Any]:
+        """Get performance statistics"""
+        try:
+            stats = {
+                "loaded": self.loaded,
+                "reference_set": self.reference_frame is not None,
+                "liveportrait_ready": self.liveportrait_ready,
+                "frame_count": len(self.frame_times),
+                "audio_count": len(self.audio_times)
+            }
             
-            # Get current optimization settings
-            if self.optimizer is not None:
-                opt_settings = self.optimizer.get_optimization_settings()
-                target_resolution = opt_settings.get('resolution', (512, 512))
+            if self.frame_times:
+                avg_frame_time = np.mean(list(self.frame_times))
+                stats["avg_frame_time_ms"] = avg_frame_time * 1000
+                stats["estimated_fps"] = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+            
+            if self.audio_times:
+                stats["avg_audio_time_ms"] = np.mean(list(self.audio_times)) * 1000
+            
+            # LivePortrait engine stats
+            if self.liveportrait_engine:
+                lp_stats = self.liveportrait_engine.get_performance_stats()
+                stats["liveportrait"] = lp_stats
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting performance stats: {e}")
+            return {"error": str(e), "loaded": False}
+
+
+# Singleton pipeline instance
+_pipeline_instance: Optional[RealTimeAvatarPipeline] = None
+
+def get_pipeline() -> RealTimeAvatarPipeline:
+    """Get global pipeline instance"""
+    global _pipeline_instance
+    if _pipeline_instance is None:
+        _pipeline_instance = RealTimeAvatarPipeline()
+    return _pipeline_instance
             else:
                 opt_settings = {}
                 target_resolution = self.config.video_resolution
