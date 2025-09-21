@@ -14,6 +14,7 @@
   const els = {
     ref: document.getElementById('referenceInput'),
     init: document.getElementById('initBtn'),
+    debug: document.getElementById('debugBtn'),
     connect: document.getElementById('connectBtn'),
     disconnect: document.getElementById('disconnectBtn'),
     localVideo: document.getElementById('localVideo'),
@@ -205,6 +206,21 @@
         setStatus('Init error');
       } finally {
         els.init.disabled = false;
+      }
+    });
+  }
+  if (els.debug) {
+    els.debug.addEventListener('click', async ()=>{
+      try {
+        setStatus('Fetching debug info...');
+        const r = await fetch('/debug/models');
+        const j = await r.json();
+        console.log('[DEBUG] /debug/models', j);
+        const app = j.files?.['appearance_feature_extractor.onnx'];
+        const motion = j.files?.['motion_extractor.onnx'];
+        setStatus(`ONNX: app=${app?.exists?'✔':'✖'}(${app?.size_bytes||0}), motion=${motion?.exists?'✔':'✖'}(${motion?.size_bytes||0})`);
+      } catch(e){
+        setStatus('Debug fetch failed');
       }
     });
   }
