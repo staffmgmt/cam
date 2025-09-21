@@ -101,7 +101,16 @@
         }, 4000);
       };
       state.control.onmessage = (e)=>{
-        try { const data = JSON.parse(e.data); if(data.type==='metrics' && data.payload){ updatePerf(data.payload); } } catch(_){ }
+        try {
+          const data = JSON.parse(e.data);
+          if(data.type==='metrics' && data.payload){
+            updatePerf(data.payload);
+          } else if (data.type === 'reference_ack'){
+            setStatus('Reference set');
+          } else if (data.type === 'error' && data.message){
+            setStatus('Error: '+data.message);
+          }
+        } catch(_){ }
       };
       state.localStream.getTracks().forEach(t=> state.pc.addTrack(t, state.localStream));
       const offer = await state.pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:true});

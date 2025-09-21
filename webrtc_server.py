@@ -70,7 +70,7 @@ class _PassThroughPipeline:
         # No-op reference; return False to indicate not used
         return False
 
-    def process_video_frame(self, img):
+    def process_video_frame(self, img, frame_idx=None):
         # Pass-through video
         return img
 

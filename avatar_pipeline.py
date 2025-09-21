@@ -392,9 +392,34 @@ class RealTimeAvatarPipeline:
         start_time = time.time()
         
         try:
-            # If models aren't loaded or reference isn't ready, return the incoming frame (stable preview)
-            if not self.loaded or self.reference_frame is None:
+            # If models aren't loaded yet:
+            if not self.loaded:
+                # If user set a reference, show it as a visible confirmation until animator is ready
+                if self.reference_frame is not None:
+                    try:
+                        h, w = frame.shape[:2]
+                        ref = cv2.resize(self.reference_frame, (w, h))
+                        return ref
+                    except Exception:
+                        return frame
+                # Otherwise, keep pass-through camera preview
                 return frame
+
+            # If loaded but no animator available yet, and reference exists, display reference image
+            try:
+                animator_available = (
+                    self.liveportrait.loaded or
+                    getattr(self.safe_loader, 'liveportrait_loaded', False) or
+                    (self.landmark_reenactor is not None)
+                )
+            except Exception:
+                animator_available = False
+            if not animator_available and self.reference_frame is not None:
+                try:
+                    h, w = frame.shape[:2]
+                    return cv2.resize(self.reference_frame, (w, h))
+                except Exception:
+                    pass
             
             # Get current optimization settings
             opt_settings = self.optimizer.get_optimization_settings()
@@ -546,6 +571,12 @@ class RealTimeAvatarPipeline:
                 "max_video_latency_ms": float(np.max(video_times)) if video_times else 0,
                 "max_audio_latency_ms": float(np.max(audio_times)) if audio_times else 0,
                 "models_loaded": self.loaded,
+                "animator_available": bool(
+                    getattr(self.liveportrait, 'loaded', False) or
+                    getattr(self.safe_loader, 'liveportrait_loaded', False) or
+                    (self.landmark_reenactor is not None)
+                ),
+                "reference_set": self.reference_frame is not None,
                 "gpu_available": torch.cuda.is_available(),
                 "gpu_memory_used": torch.cuda.memory_allocated() / 1024**3 if torch.cuda.is_available() else 0,
                 "virtual_camera_active": self.virtual_camera is not None and self.virtual_camera.is_running
