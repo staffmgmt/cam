@@ -387,6 +387,47 @@ class IncomingVideoTrack(MediaStreamTrack):
         return new_frame
 
 
+class OutboundVideoTrack(MediaStreamTrack):
+    """Outbound track that sends black frames until a real source is attached.
+    Once set_source is called with a MediaStreamTrack, it relays frames from that track.
+    """
+    kind = "video"
+
+    def __init__(self, width: int = 640, height: int = 480, fps: int = 20):
+        super().__init__()
+        self._source: Optional[MediaStreamTrack] = None
+        self._width = width
+        self._height = height
+        self._frame_interval = 1.0 / max(1, fps)
+        self._last_ts = time.time()
+
+    def set_source(self, track: MediaStreamTrack):
+        self._source = track
+
+    async def recv(self):  # type: ignore[override]
+        src = self._source
+        if src is not None:
+            try:
+                return await src.recv()
+            except Exception:
+                # fall back to black frame if source errors
+                pass
+        # generate black frame at target fps
+        now = time.time()
+        delay = self._frame_interval - (now - self._last_ts)
+        if delay > 0:
+            await asyncio.sleep(delay)
+        self._last_ts = time.time()
+        frame = np.zeros((self._height, self._width, 3), dtype=np.uint8)
+        try:
+            import av as _av
+            vframe = _av.VideoFrame.from_ndarray(frame, format="bgr24")
+        except Exception:
+            # Minimal fallback: construct via base class helper if available
+            vframe = MediaStreamTrack().from_ndarray(frame, format="bgr24")  # type: ignore[attr-defined]
+        return vframe
+
+
 class IncomingAudioTrack(MediaStreamTrack):
     kind = "audio"
 
@@ -598,18 +639,23 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         except Exception:
             pass
 
-    # Pre-create sendonly transceivers so the answer advertises outbound media m-lines
-    video_sender = pc.addTransceiver("video", direction="sendonly").sender
-    audio_sender = pc.addTransceiver("audio", direction="sendonly").sender
-
-    # Set remote description
+    # Set remote description first so we can align transceivers with offered m-lines
     try:
         desc = RTCSessionDescription(sdp=offer["sdp"], type=offer["type"])
         await pc.setRemoteDescription(desc)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
-    # Attach incoming tracks and bind outbound processed tracks using replaceTrack
+    # Create an outbound video track immediately so the answer includes a sending m-line
+    outbound_video = OutboundVideoTrack()
+    video_sender = pc.addTransceiver("video", direction="sendonly").sender
+    try:
+        await video_sender.replaceTrack(outbound_video)
+    except Exception as e:
+        logger.error(f"Failed to bind outbound video track: {e}")
+
+    # For audio, we keep pass-through upon arrival; pre-announce sendonly too to keep symmetry
+    audio_sender = pc.addTransceiver("audio", direction="sendonly").sender
 
     @pc.on("track")
     def on_track(track):
@@ -617,10 +663,9 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         if track.kind == "video":
             local = IncomingVideoTrack(track)
             try:
-                # Bind to the pre-announced sendonly transceiver
-                asyncio.create_task(video_sender.replaceTrack(local))
+                outbound_video.set_source(local)
             except Exception as e:
-                logger.error(f"video replaceTrack error: {e}")
+                logger.error(f"video source assign error: {e}")
         elif track.kind == "audio":
             local_a = IncomingAudioTrack(track)
             try:

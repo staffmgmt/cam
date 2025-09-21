@@ -125,6 +125,11 @@
         }
       };
       state.pc.ontrack = ev => {
+        try {
+          const tr = ev.track;
+          log('ontrack', tr && tr.kind, tr && tr.readyState, ev.streams && ev.streams.length);
+          setStatus('Remote track: '+(tr && tr.kind || 'unknown'));
+        } catch(_){ }
         if(ev.streams && ev.streams[0]){
           els.remoteVideo.srcObject = ev.streams[0];
         } else if (ev.track) {
