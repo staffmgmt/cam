@@ -130,12 +130,33 @@ async def webrtc_ping():
         "router": True,
         "aiortc_available": AIORTC_AVAILABLE,
         "aiortc_error": None if AIORTC_AVAILABLE else AIORTC_IMPORT_ERROR,
+        "turn_configured": bool(TURN_URL and TURN_USER and TURN_PASS)
     }
 
 # Minimal root to confirm router is mounted
 @router.get("")
 async def webrtc_root():
     return {"webrtc": True, "aiortc_available": AIORTC_AVAILABLE}
+
+@router.get("/ice_config")
+async def webrtc_ice_config():
+    """Expose ICE server configuration so the client can include TURN if configured.
+    Returns a structure compatible with RTCPeerConnection's configuration.
+    """
+    try:
+        cfg = _ice_configuration()
+        servers = []
+        for s in cfg.iceServers:
+            entry = {"urls": s.urls}
+            if getattr(s, 'username', None):
+                entry["username"] = s.username
+            if getattr(s, 'credential', None):
+                entry["credential"] = s.credential
+            servers.append(entry)
+        return {"iceServers": servers}
+    except Exception as e:
+        # Fallback to public STUN
+        return {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}], "error": str(e)}
 
 
 def _verify_token(token: str) -> bool:

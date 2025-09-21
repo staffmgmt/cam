@@ -85,7 +85,12 @@
       state.localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
       els.localVideo.srcObject = state.localStream;
       setStatus('Creating peer');
-      state.pc = new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302']}]});
+      let iceCfg = {iceServers:[{urls:['stun:stun.l.google.com:19302']}]};
+      try {
+        const ic = await fetch('/webrtc/ice_config');
+        if (ic.ok) { iceCfg = await ic.json(); }
+      } catch(_){}
+      state.pc = new RTCPeerConnection(iceCfg);
       state.pc.oniceconnectionstatechange = ()=>{
         log('ice state', state.pc.iceConnectionState);
         if(['failed','closed'].includes(state.pc.iceConnectionState)){
@@ -95,7 +100,10 @@
       state.pc.onconnectionstatechange = ()=>{
         const st = state.pc.connectionState;
         log('pc state', st);
-        // Allow transient 'disconnected' to recover; only hard close on failed/closed
+        // Allow transient 'disconnected' to recover; try ICE restart once
+        if(st === 'disconnected'){
+          try { state.pc.restartIce && state.pc.restartIce(); } catch(_){ }
+        }
         if(['failed','closed'].includes(st)){
           disconnect();
         }
