@@ -42,10 +42,11 @@ except Exception as e:
     get_safe_model_loader = None
 
 try:
-    from landmark_reenactor import LandmarkReenactor
+    from landmark_reenactor import LandmarkReenactor, MP_AVAILABLE
 except Exception as e:
     logger.warning(f"landmark_reenactor not available: {e}")
     LandmarkReenactor = None
+    MP_AVAILABLE = False
 
 try:
     from realtime_optimizer import get_realtime_optimizer
@@ -288,8 +289,13 @@ class RealTimeAvatarPipeline:
         self.liveportrait = LivePortraitModel(self.config)
         self.rvc = RVCVoiceConverter(self.config)
         self.safe_loader = get_safe_model_loader()
-        self.landmark_mode = os.getenv("MIRAGE_ENABLE_LANDMARK_REENACTOR", "0").lower() in ("1","true","yes","on")
-        self.landmark_reenactor = LandmarkReenactor(target_size=self.config.video_resolution) if self.landmark_mode else None
+        # Auto-enable landmark reenactor if available unless explicitly disabled via env
+        lm_env = os.getenv("MIRAGE_ENABLE_LANDMARK_REENACTOR")
+        self.landmark_mode = (
+            (lm_env is not None and lm_env.lower() in ("1","true","yes","on")) or
+            (lm_env is None and MP_AVAILABLE)
+        ) and not (lm_env is not None and lm_env.lower() in ("0","false","no","off"))
+        self.landmark_reenactor = LandmarkReenactor(target_size=self.config.video_resolution) if (self.landmark_mode and LandmarkReenactor is not None) else None
         
         # Performance optimization
         self.optimizer = get_realtime_optimizer()
@@ -349,7 +355,7 @@ class RealTimeAvatarPipeline:
             scrfd_safe_ok = results[2] is True
             lp_safe_ok = results[3] is True
             logger.info(
-                f"Loaded components - FaceDetector: {fd_ok}, LivePortrait: {lp_ok}, RVC: {rvc_ok}, SCRFD(safe): {scrfd_safe_ok}, LivePortrait(safe): {lp_safe_ok}"
+                f"Loaded components - FaceDetector: {fd_ok}, LivePortrait: {lp_ok}, RVC: {rvc_ok}, SCRFD(safe): {scrfd_safe_ok}, LivePortrait(safe): {lp_safe_ok}, LandmarkReenactor: {self.landmark_reenactor is not None}"
             )
 
             # Relaxed success criteria: proceed if ANY core component is available
@@ -453,7 +459,11 @@ class RealTimeAvatarPipeline:
                 t0 = time.time()
                 bbox = None
                 confidence = 0.0
-                if self.safe_loader.scrfd_loaded:
+                if self.landmark_reenactor is not None and self.reference_frame is not None:
+                    # If landmark reenactor is active, we can skip heavy detection and rely on its tracker
+                    bbox = (0,0,self.config.video_resolution[0], self.config.video_resolution[1])
+                    confidence = 1.0
+                elif self.safe_loader.scrfd_loaded:
                     try:
                         sb = self.safe_loader.safe_detect_face(frame_resized)
                         if sb is not None:
@@ -471,7 +481,9 @@ class RealTimeAvatarPipeline:
                 elif bbox is not None and confidence >= self.config.face_redetect_threshold:
                     # Animate face using LivePortrait
                     t1 = time.time()
-                    if self.liveportrait.loaded:
+                    if self.landmark_reenactor is not None:
+                        animated_frame = self.landmark_reenactor.reenact(frame_resized)
+                    elif self.liveportrait.loaded:
                         animated_frame = self.liveportrait.animate_face(
                             self.reference_frame, frame_resized
                         )
@@ -479,8 +491,6 @@ class RealTimeAvatarPipeline:
                         animated_frame = self.safe_loader.safe_animate_face(
                             self.reference_frame, frame_resized
                         )
-                    elif self.landmark_reenactor is not None:
-                        animated_frame = self.landmark_reenactor.reenact(frame_resized)
                     else:
                         animated_frame = frame_resized
                     self._metrics.record_component_timing('animation', (time.time() - t1) * 1000.0)
