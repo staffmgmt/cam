@@ -642,11 +642,20 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
+    # Helper to support both async and sync replaceTrack implementations
+    async def _maybe_replace(sender, track):
+        try:
+            res = sender.replaceTrack(track)
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception as _e:
+            raise
+
     # Create an outbound video track immediately so the answer includes a sending m-line
     try:
         outbound_video = OutboundVideoTrack()
         video_sender = pc.addTransceiver("video", direction="sendonly").sender
-        await video_sender.replaceTrack(outbound_video)
+        await _maybe_replace(video_sender, outbound_video)
     except Exception as e:
         logger.error(f"Failed to set up outbound video: {e}")
         raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
@@ -670,7 +679,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         elif track.kind == "audio":
             local_a = IncomingAudioTrack(track)
             try:
-                asyncio.create_task(audio_sender.replaceTrack(local_a))
+                asyncio.create_task(_maybe_replace(audio_sender, local_a))
             except Exception as e:
                 logger.error(f"audio replaceTrack error: {e}")
 
