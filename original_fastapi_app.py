@@ -329,6 +329,39 @@ async def log_config():
             pass
 
 
+@app.get("/debug/models")
+async def debug_models():
+    """Return presence and sizes for expected model files, plus loader flags."""
+    from pathlib import Path
+    lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
+    files = {}
+    try:
+        for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx"):
+            p = lp_dir / name
+            files[name] = {
+                "exists": p.exists(),
+                "size_bytes": p.stat().st_size if p.exists() else 0,
+            }
+    except Exception:
+        pass
+    # Probe pipeline flags
+    try:
+        stats = pipeline.get_performance_stats()
+    except Exception:
+        stats = {}
+    # Lightweight flags
+    flags = {
+        "MIRAGE_ENABLE_SCRFD": os.getenv("MIRAGE_ENABLE_SCRFD"),
+        "MIRAGE_ENABLE_LIVEPORTRAIT": os.getenv("MIRAGE_ENABLE_LIVEPORTRAIT"),
+        "MIRAGE_DOWNLOAD_MODELS": os.getenv("MIRAGE_DOWNLOAD_MODELS"),
+    }
+    return {
+        "files": files,
+        "flags": flags,
+        "pipeline_stats": stats,
+    }
+
+
 # Note: The Dockerfile / README launch with: uvicorn app:app --port 7860
 if __name__ == "__main__":  # Optional direct run helper
     import uvicorn  # type: ignore
