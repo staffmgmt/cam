@@ -94,7 +94,7 @@
         const ic = await fetch('/webrtc/ice_config');
         if (ic.ok) { iceCfg = await ic.json(); }
       } catch(_){}
-      if (overrideRelay || FORCE_RELAY_URL) { iceCfg.iceTransportPolicy = 'relay'; }
+      if (overrideRelay || FORCE_RELAY_URL || iceCfg.forceRelay === true) { iceCfg.iceTransportPolicy = 'relay'; }
       log('ice config', iceCfg);
       state.pc = new RTCPeerConnection(iceCfg);
       state._usedRelay = !!iceCfg.iceTransportPolicy && iceCfg.iceTransportPolicy === 'relay';

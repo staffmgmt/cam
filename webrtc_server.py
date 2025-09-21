@@ -106,6 +106,9 @@ TURN_URL = os.getenv("MIRAGE_TURN_URL")
 TURN_USER = os.getenv("MIRAGE_TURN_USER")
 TURN_PASS = os.getenv("MIRAGE_TURN_PASS")
 METERED_API_KEY = os.getenv("MIRAGE_METERED_API_KEY")
+TURN_TLS_ONLY = os.getenv("MIRAGE_TURN_TLS_ONLY", "1").strip().lower() in {"1","true","yes","on"}
+PREFER_H264 = os.getenv("MIRAGE_PREFER_H264", "0").strip().lower() in {"1","true","yes","on"}
+FORCE_RELAY = os.getenv("MIRAGE_FORCE_RELAY", "0").strip().lower() in {"1","true","yes","on"}
 
 
 def _b64u(data: bytes) -> str:
@@ -158,7 +161,10 @@ async def webrtc_ice_config():
             if getattr(s, 'credential', None):
                 entry["credential"] = s.credential
             servers.append(entry)
-        return {"iceServers": servers}
+        payload = {"iceServers": servers}
+        if FORCE_RELAY:
+            payload["forceRelay"] = True
+        return payload
     except Exception as e:
         # Fallback to public STUN
         return {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}], "error": str(e)}
@@ -180,11 +186,18 @@ async def webrtc_debug_state():
         def _sender_info(s):
             try:
                 tr = s.track
-                return {
+                info = {
                     "kind": getattr(tr, 'kind', None) if tr else None,
                     "readyState": getattr(tr, 'readyState', None) if tr else None,
                     "exists": tr is not None
                 }
+                # Include frame emission counter if available
+                try:
+                    if tr and getattr(tr, 'kind', None) == 'video' and hasattr(tr, '_debug_emitted'):
+                        info["frames_emitted"] = getattr(tr, '_debug_emitted')
+                except Exception:
+                    pass
+                return info
             except Exception:
                 return {"kind": None, "exists": False}
         return {
@@ -238,7 +251,7 @@ def _ice_configuration() -> RTCConfiguration:
     # STUN servers (comma-separated)
     for url in [u.strip() for u in STUN_URLS.split(',') if u.strip()]:
         servers.append(RTCIceServer(urls=[url]))
-    # Optional TURN
+    # Optional TURN (static)
     if TURN_URL and TURN_USER and TURN_PASS:
         for tur in [u.strip() for u in str(TURN_URL).split(',') if u.strip()]:
             servers.append(RTCIceServer(urls=[tur], username=TURN_USER, credential=TURN_PASS))
@@ -264,6 +277,24 @@ def _ice_configuration() -> RTCConfiguration:
                 servers.append(RTCIceServer(urls=urls, username=username, credential=credential))
         except Exception as e:
             logger.debug(f"Metered ICE fetch failed: {e}")
+    # Optionally filter to TLS/TCP-only TURN to succeed behind strict firewalls
+    def _is_tls_tcp(url: str) -> bool:
+        u = url.lower()
+        return u.startswith('turns:') or 'transport=tcp' in u or ':443' in u
+
+    if TURN_TLS_ONLY:
+        filtered = []
+        for s in servers:
+            urls = s.urls if isinstance(s.urls, list) else [s.urls]
+            keep_urls = [u for u in urls if _is_tls_tcp(u)]
+            if keep_urls:
+                filtered.append(RTCIceServer(urls=keep_urls, username=getattr(s,'username',None), credential=getattr(s,'credential',None)))
+        if filtered:
+            servers = filtered
+        else:
+            # As a safety, if nothing matched, keep originals
+            pass
+
     return RTCConfiguration(iceServers=servers)
 
 
@@ -393,7 +424,7 @@ class OutboundVideoTrack(VideoStreamTrack):
     """
     kind = "video"
 
-    def __init__(self, width: int = 640, height: int = 480, fps: int = 20):
+    def __init__(self, width: int = 320, height: int = 240, fps: int = 15):
         super().__init__()
         self._source: Optional[MediaStreamTrack] = None
         self._width = width
@@ -401,6 +432,7 @@ class OutboundVideoTrack(VideoStreamTrack):
         self._frame_interval = 1.0 / max(1, fps)
         self._last_ts = time.time()
         self._frame_count = 0
+        self._debug_emitted = 0
 
     def set_source(self, track: MediaStreamTrack):
         self._source = track
@@ -411,6 +443,7 @@ class OutboundVideoTrack(VideoStreamTrack):
             try:
                 f = await src.recv()
                 self._frame_count += 1
+                self._debug_emitted += 1
                 return f
             except Exception:
                 # fall back to black frame if source errors
@@ -429,6 +462,7 @@ class OutboundVideoTrack(VideoStreamTrack):
         vframe.pts = pts
         vframe.time_base = time_base
         self._frame_count += 1
+        self._debug_emitted += 1
         return vframe
 
 
@@ -643,31 +677,12 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         except Exception:
             pass
 
-    # Set remote description first so we can align transceivers with offered m-lines
-    try:
-        desc = RTCSessionDescription(sdp=offer["sdp"], type=offer["type"])
-        await pc.setRemoteDescription(desc)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
-
-    # Create an outbound video track immediately so the answer includes a sending m-line
+    # Prepare outbound video first and register track handler before remote description,
+    # so we don't miss the initial 'track' events fired during setRemoteDescription.
     try:
         outbound_video = OutboundVideoTrack()
-        sender = pc.addTrack(outbound_video)
-        # Prefer VP8 and set a reasonable bitrate to help relay stability
-        try:
-            params = sender.getParameters()
-            if params and hasattr(params, 'encodings'):
-                if not params.encodings:
-                    params.encodings = [{}]
-                for enc in params.encodings:
-                    enc.setdefault('maxBitrate', 800_000)  # ~800 kbps
-                    enc.setdefault('degradationPreference', 'maintain-resolution')
-            sender.setParameters(params)
-        except Exception:
-            pass
     except Exception as e:
-        logger.error(f"Failed to set up outbound video: {e}")
+        logger.error(f"Failed to construct outbound video: {e}")
         raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
 
     @pc.on("track")
@@ -677,14 +692,42 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             local = IncomingVideoTrack(track)
             try:
                 outbound_video.set_source(local)
+                logger.info("Outbound video source bound to incoming video")
             except Exception as e:
                 logger.error(f"video source assign error: {e}")
         elif track.kind == "audio":
             local_a = IncomingAudioTrack(track)
             try:
                 pc.addTrack(local_a)
+                logger.info("Loopback processed audio track added")
             except Exception as e:
                 logger.error(f"audio addTrack error: {e}")
+
+    # Add outbound video to ensure the answer includes a send m-line
+    try:
+        sender = pc.addTrack(outbound_video)
+        try:
+            params = sender.getParameters()
+            if params and hasattr(params, 'encodings'):
+                if not params.encodings:
+                    params.encodings = [{}]
+                for enc in params.encodings:
+                    enc['maxBitrate'] = min(enc.get('maxBitrate', 300_000), 300_000)
+                    enc.setdefault('scaleResolutionDownBy', 2.0)
+                    enc.setdefault('degradationPreference', 'maintain-resolution')
+            sender.setParameters(params)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Failed to set up outbound video: {e}")
+        raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
+
+    # Now apply the remote description (offer)
+    try:
+        desc = RTCSessionDescription(sdp=offer["sdp"], type=offer["type"])
+        await pc.setRemoteDescription(desc)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
     # Create answer with error surfacing
     try:
@@ -694,6 +737,12 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         raise HTTPException(status_code=500, detail=f"createAnswer: {e}")
     # Avoid SDP munging to reduce negotiation fragility
     try:
+        # Optionally prefer H264 for broader compatibility
+        if PREFER_H264 and isinstance(answer.sdp, str):
+            try:
+                answer = RTCSessionDescription(sdp=_prefer_codec(answer.sdp, 'video', 'H264'), type=answer.type)
+            except Exception:
+                pass
         await pc.setLocalDescription(answer)
     except Exception as e:
         logger.error(f"setLocalDescription error: {e}")
@@ -729,6 +778,26 @@ async def cleanup_peer(x_api_key: Optional[str] = Header(default=None), x_auth_t
             pass
         _peer_state = None
         return {"status": "closed"}
+
+@router.get("/frame_counter")
+async def frame_counter():
+    try:
+        st = _peer_state
+        if st is None:
+            return {"active": False}
+        pc = st.pc
+        count = None
+        try:
+            for s in pc.getSenders():
+                tr = getattr(s, 'track', None)
+                if tr and getattr(tr, 'kind', None) == 'video' and hasattr(tr, '_debug_emitted'):
+                    count = getattr(tr, '_debug_emitted')
+                    break
+        except Exception:
+            pass
+        return {"active": True, "frames_emitted": count}
+    except Exception as e:
+        return {"active": False, "error": str(e)}
 
 # Optional: connection monitoring endpoint for diagnostics
 if add_connection_monitoring is not None:
