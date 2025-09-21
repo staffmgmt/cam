@@ -400,6 +400,7 @@ class OutboundVideoTrack(VideoStreamTrack):
         self._height = height
         self._frame_interval = 1.0 / max(1, fps)
         self._last_ts = time.time()
+        self._frame_count = 0
 
     def set_source(self, track: MediaStreamTrack):
         self._source = track
@@ -408,7 +409,9 @@ class OutboundVideoTrack(VideoStreamTrack):
         src = self._source
         if src is not None:
             try:
-                return await src.recv()
+                f = await src.recv()
+                self._frame_count += 1
+                return f
             except Exception:
                 # fall back to black frame if source errors
                 pass
@@ -421,6 +424,11 @@ class OutboundVideoTrack(VideoStreamTrack):
         frame = np.zeros((self._height, self._width, 3), dtype=np.uint8)
         import av as _av
         vframe = _av.VideoFrame.from_ndarray(frame, format="bgr24")
+        # Provide monotonically increasing timestamps for encoder
+        pts, time_base = await self.next_timestamp()
+        vframe.pts = pts
+        vframe.time_base = time_base
+        self._frame_count += 1
         return vframe
 
 
@@ -645,7 +653,19 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     # Create an outbound video track immediately so the answer includes a sending m-line
     try:
         outbound_video = OutboundVideoTrack()
-        pc.addTrack(outbound_video)
+        sender = pc.addTrack(outbound_video)
+        # Prefer VP8 and set a reasonable bitrate to help relay stability
+        try:
+            params = sender.getParameters()
+            if params and hasattr(params, 'encodings'):
+                if not params.encodings:
+                    params.encodings = [{}]
+                for enc in params.encodings:
+                    enc.setdefault('maxBitrate', 800_000)  # ~800 kbps
+                    enc.setdefault('degradationPreference', 'maintain-resolution')
+            sender.setParameters(params)
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"Failed to set up outbound video: {e}")
         raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
