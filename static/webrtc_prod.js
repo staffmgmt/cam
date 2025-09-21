@@ -82,6 +82,9 @@
       state.pc.ontrack = ev => {
         if(ev.streams && ev.streams[0]){
           els.remoteVideo.srcObject = ev.streams[0];
+        } else if (ev.track) {
+          const ms = new MediaStream([ev.track]);
+          els.remoteVideo.srcObject = ms;
         }
       };
       state.control = state.pc.createDataChannel('control');
