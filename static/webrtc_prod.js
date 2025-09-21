@@ -13,6 +13,7 @@
   };
   const els = {
     ref: document.getElementById('referenceInput'),
+    init: document.getElementById('initBtn'),
     connect: document.getElementById('connectBtn'),
     disconnect: document.getElementById('disconnectBtn'),
     localVideo: document.getElementById('localVideo'),
@@ -187,6 +188,26 @@
   }
 
   els.ref.addEventListener('change', handleReference);
+  if (els.init) {
+    els.init.addEventListener('click', async ()=>{
+      try {
+        setStatus('Initializing pipeline...');
+        els.init.disabled = true;
+        const r = await fetch('/initialize', {method:'POST'});
+        const j = await r.json().catch(()=>({}));
+        if (r.ok && j && (j.status==='success' || j.status==='already_initialized')){
+          setStatus(j.message || 'Initialized');
+        } else {
+          setStatus('Init failed');
+          console.warn('initialize response', r.status, j);
+        }
+      } catch(e){
+        setStatus('Init error');
+      } finally {
+        els.init.disabled = false;
+      }
+    });
+  }
   els.connect.addEventListener('click', connect);
   els.disconnect.addEventListener('click', disconnect);
 })();
