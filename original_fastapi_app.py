@@ -320,13 +320,23 @@ async def log_config():
         "gpu_name": gpu_name,
     }
     print("[startup]", startup_line)
-    # Kick off non-blocking model download in background (optional)
+    # Model download: ensure presence once, then also fire background attempt
     if model_downloader is not None:
         try:
+            from pathlib import Path
+            lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
+            app_p = lp_dir / 'appearance_feature_extractor.onnx'
+            motion_p = lp_dir / 'motion_extractor.onnx'
+            need = (os.getenv('MIRAGE_DOWNLOAD_MODELS','0').lower() in ('1','true','yes','on')) and (not app_p.exists())
+            if need:
+                loop = asyncio.get_running_loop()
+                # Blocking attempt once (in executor to keep loop responsive)
+                await loop.run_in_executor(None, model_downloader.maybe_download)
+            # Also kick a non-blocking attempt regardless
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, model_downloader.maybe_download)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[startup] downloader scheduling error: {e}")
 
 
 @app.get("/debug/models")
