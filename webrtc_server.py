@@ -545,17 +545,36 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
     # Attach incoming tracks and re-add outbound processed tracks
+    # To ensure the outbound tracks are negotiated in the first SDP answer,
+    # wait briefly for the incoming track event(s) before creating the answer.
+    track_ready_video: asyncio.Event = asyncio.Event()
+    track_ready_audio: asyncio.Event = asyncio.Event()
+
     @pc.on("track")
     def on_track(track):
         logger.info("Track received: %s", track.kind)
         if track.kind == "video":
             local = IncomingVideoTrack(track)
             pc.addTrack(local)
+            try:
+                track_ready_video.set()
+            except Exception:
+                pass
         elif track.kind == "audio":
             local_a = IncomingAudioTrack(track)
             pc.addTrack(local_a)
+            try:
+                track_ready_audio.set()
+            except Exception:
+                pass
 
-        # Create answer
+    # Wait up to ~750ms for the video track to arrive so the outgoing track is present in SDP
+    try:
+        await asyncio.wait_for(track_ready_video.wait(), timeout=0.75)
+    except Exception:
+        pass
+
+    # Create answer
     answer = await pc.createAnswer()
     # Prefer VP8 by default for broader compatibility; can override via MIRAGE_PREFERRED_VIDEO_CODEC
     patched_sdp = _prefer_codec(answer.sdp, 'video', os.getenv('MIRAGE_PREFERRED_VIDEO_CODEC', 'VP8'))

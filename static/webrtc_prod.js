@@ -12,7 +12,7 @@
     cancelled: false
   };
   const params = new URLSearchParams(location.search);
-  const FORCE_RELAY = params.get('relay') === '1';
+  const FORCE_RELAY_URL = params.get('relay') === '1';
   const els = {
     ref: document.getElementById('referenceInput'),
     init: document.getElementById('initBtn'),
@@ -59,7 +59,8 @@
     } catch(_) {}
   }
 
-  async function connect(){
+  async function connect(options){
+    const overrideRelay = options && options.forceRelay === true;
     if(state.connected) return;
     if(state.connecting) return;
     try {
@@ -92,9 +93,11 @@
         const ic = await fetch('/webrtc/ice_config');
         if (ic.ok) { iceCfg = await ic.json(); }
       } catch(_){}
-      if (FORCE_RELAY) { iceCfg.iceTransportPolicy = 'relay'; }
+      if (overrideRelay || FORCE_RELAY_URL) { iceCfg.iceTransportPolicy = 'relay'; }
       log('ice config', iceCfg);
       state.pc = new RTCPeerConnection(iceCfg);
+      state._usedRelay = !!iceCfg.iceTransportPolicy && iceCfg.iceTransportPolicy === 'relay';
+      state._relayFallbackTried = !!overrideRelay || !!FORCE_RELAY_URL; // if already forcing relay, don't fallback again
       state.pc.oniceconnectionstatechange = ()=>{
         log('ice state', state.pc.iceConnectionState);
         if(['failed','closed'].includes(state.pc.iceConnectionState)){
@@ -109,7 +112,14 @@
           try { state.pc.restartIce && state.pc.restartIce(); } catch(_){ }
         }
         if(['failed','closed'].includes(st)){
-          disconnect();
+          const tryRelay = !state._usedRelay && !state._relayFallbackTried;
+          disconnect().then(()=>{
+            if (tryRelay) {
+              state._relayFallbackTried = true;
+              log('retrying with relay-only');
+              connect({forceRelay:true});
+            }
+          });
         }
       };
       state.pc.ontrack = ev => {
@@ -119,6 +129,7 @@
           const ms = new MediaStream([ev.track]);
           els.remoteVideo.srcObject = ms;
         }
+        try { els.remoteVideo.play && els.remoteVideo.play(); } catch(_) {}
       };
       state.control = state.pc.createDataChannel('control');
       state.control.onopen = ()=>{
