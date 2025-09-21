@@ -454,7 +454,37 @@ class OutboundVideoTrack(VideoStreamTrack):
         if delay > 0:
             await asyncio.sleep(delay)
         self._last_ts = time.time()
+        # Diagnostic test pattern: color bars + moving square + frame counter
         frame = np.zeros((self._height, self._width, 3), dtype=np.uint8)
+        try:
+            # Color bars
+            num_bars = 6
+            bar_w = max(1, self._width // num_bars)
+            colors = [
+                (0,0,255),    # Red
+                (0,255,0),    # Green
+                (255,0,0),    # Blue
+                (0,255,255),  # Yellow
+                (255,0,255),  # Magenta
+                (255,255,0),  # Cyan
+            ]
+            for i in range(num_bars):
+                x0 = i*bar_w
+                x1 = self._width if i==num_bars-1 else (i+1)*bar_w
+                frame[:, x0:x1] = colors[i]
+            # Moving square
+            t = int(time.time()*2)  # moves every 0.5s
+            sq = max(10, min(self._height, self._width)//8)
+            x = (t*15) % max(1, (self._width - sq))
+            y = (t*9) % max(1, (self._height - sq))
+            cv2.rectangle(frame, (x,y), (x+sq,y+sq), (255,255,255), thickness=-1)
+            # Text with frame count
+            text = f"OUT {self._frame_count}"
+            cv2.putText(frame, text, (10, self._height-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2, cv2.LINE_AA)
+            cv2.putText(frame, text, (10, self._height-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
+        except Exception:
+            # If OpenCV drawing fails for any reason, keep plain black
+            pass
         import av as _av
         vframe = _av.VideoFrame.from_ndarray(frame, format="bgr24")
         # Provide monotonically increasing timestamps for encoder
