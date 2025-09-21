@@ -204,7 +204,8 @@ def _ice_configuration() -> RTCConfiguration:
         servers.append(RTCIceServer(urls=[url]))
     # Optional TURN
     if TURN_URL and TURN_USER and TURN_PASS:
-        servers.append(RTCIceServer(urls=[TURN_URL], username=TURN_USER, credential=TURN_PASS))
+        for tur in [u.strip() for u in str(TURN_URL).split(',') if u.strip()]:
+            servers.append(RTCIceServer(urls=[tur], username=TURN_USER, credential=TURN_PASS))
     # Optional Metered.ca ephemeral TURN using API key
     if METERED_API_KEY:
         try:
@@ -556,8 +557,8 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
         # Create answer
     answer = await pc.createAnswer()
-    # Prefer H264 for broader compatibility (fallback to as-is if munging fails)
-    patched_sdp = _prefer_codec(answer.sdp, 'video', os.getenv('MIRAGE_PREFERRED_VIDEO_CODEC', 'H264'))
+    # Prefer VP8 by default for broader compatibility; can override via MIRAGE_PREFERRED_VIDEO_CODEC
+    patched_sdp = _prefer_codec(answer.sdp, 'video', os.getenv('MIRAGE_PREFERRED_VIDEO_CODEC', 'VP8'))
     answer = RTCSessionDescription(sdp=patched_sdp, type=answer.type)
     await pc.setLocalDescription(answer)
 

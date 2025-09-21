@@ -11,6 +11,8 @@
     connecting: false,
     cancelled: false
   };
+  const params = new URLSearchParams(location.search);
+  const FORCE_RELAY = params.get('relay') === '1';
   const els = {
     ref: document.getElementById('referenceInput'),
     init: document.getElementById('initBtn'),
@@ -90,6 +92,8 @@
         const ic = await fetch('/webrtc/ice_config');
         if (ic.ok) { iceCfg = await ic.json(); }
       } catch(_){}
+      if (FORCE_RELAY) { iceCfg.iceTransportPolicy = 'relay'; }
+      log('ice config', iceCfg);
       state.pc = new RTCPeerConnection(iceCfg);
       state.pc.oniceconnectionstatechange = ()=>{
         log('ice state', state.pc.iceConnectionState);
