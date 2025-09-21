@@ -156,11 +156,11 @@ class LivePortraitModel:
             # Load the models with GPU optimization
             device = self.config.device
             
-            # Placeholder for actual LivePortrait model loading
-            # This would load the actual pretrained weights
-            logger.info("LivePortrait models loaded successfully")
-            self.loaded = True
-            return True
+            # Placeholder: Real LivePortrait loading not implemented here.
+            # Defer to safe_model_integration ONNX path instead.
+            logger.info("LivePortrait (native) not implemented; using safe ONNX path when available")
+            self.loaded = False
+            return False
             
         except Exception as e:
             logger.error(f"Failed to load LivePortrait models: {e}")

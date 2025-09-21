@@ -28,9 +28,28 @@
   async function handleReference(e){
     const file = e.target.files && e.target.files[0];
     if(!file) return;
+    // Cache base64 for datachannel use
     const buf = await file.arrayBuffer();
     const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-    state.referenceImage = b64; // cache; send now if connected
+    state.referenceImage = b64;
+    // Also POST to HTTP endpoint so the pipeline has the reference even before WebRTC connects
+    try {
+      setStatus('Uploading reference...');
+      const fd = new FormData();
+      fd.append('file', new Blob([buf], {type: file.type||'application/octet-stream'}), file.name||'reference');
+      const resp = await fetch('/set_reference', {method:'POST', body: fd});
+      const jr = await resp.json().catch(()=>({}));
+      if (resp.ok && jr && (jr.status==='success' || jr.status==='ok')){
+        setStatus('Reference set');
+      } else {
+        setStatus('Reference upload failed');
+        console.warn('set_reference response', resp.status, jr);
+      }
+    } catch(err){
+      console.warn('set_reference error', err);
+      setStatus('Reference upload error');
+    }
+    // If already connected, also send via data channel for immediate in-session update
     try {
       if (state.connected && state.control && state.control.readyState === 'open') {
         state.control.send(JSON.stringify({type:'set_reference', image_base64: state.referenceImage}));
@@ -218,7 +237,27 @@
         console.log('[DEBUG] /debug/models', j);
         const app = j.files?.['appearance_feature_extractor.onnx'];
         const motion = j.files?.['motion_extractor.onnx'];
-        setStatus(`ONNX: app=${app?.exists?'✔':'✖'}(${app?.size_bytes||0}), motion=${motion?.exists?'✔':'✖'}(${motion?.size_bytes||0})`);
+        let statusText = `ONNX: app=${app?.exists?'✔':'✖'}(${app?.size_bytes||0}), motion=${motion?.exists?'✔':'✖'}(${motion?.size_bytes||0})`;
+        setStatus(statusText);
+        // If missing, try to force a download now
+        if (!app?.exists) {
+          setStatus('Downloading models...');
+          try {
+            const d = await fetch('/debug/download_models', {method:'POST'});
+            const dj = await d.json().catch(()=>({}));
+            console.log('[DEBUG] /debug/download_models', dj);
+            // Refresh presence
+            const r2 = await fetch('/debug/models');
+            const j2 = await r2.json();
+            const app2 = j2.files?.['appearance_feature_extractor.onnx'];
+            const motion2 = j2.files?.['motion_extractor.onnx'];
+            statusText = `ONNX: app=${app2?.exists?'✔':'✖'}(${app2?.size_bytes||0}), motion=${motion2?.exists?'✔':'✖'}(${motion2?.size_bytes||0})`;
+            setStatus(statusText);
+          } catch(e){
+            console.warn('download_models failed', e);
+            setStatus('Download failed');
+          }
+        }
       } catch(e){
         setStatus('Debug fetch failed');
       }

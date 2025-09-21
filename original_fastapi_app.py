@@ -121,29 +121,33 @@ async def initialize_pipeline():
 
 @app.post("/set_reference")
 async def set_reference_image(file: UploadFile = File(...)):
-    """Set reference image for avatar"""
+    """Set reference image for avatar.
+    If pipeline isn't initialized yet, queue the image so the user sees it as soon as video starts.
+    """
     global pipeline_initialized
-    
-    if not pipeline_initialized:
-        raise HTTPException(status_code=400, detail="Pipeline not initialized")
-    
+
     try:
         # Read uploaded image
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
+
         if frame is None:
             raise HTTPException(status_code=400, detail="Invalid image format")
-        
-        # Set as reference frame
+
+        if not pipeline_initialized:
+            # Queue the frame so the UI gets immediate visual confirmation even before init
+            pipeline.reference_frame = frame.copy()
+            return {"status": "success", "message": "Reference queued (pipeline not initialized yet)"}
+
+        # Pipeline initialized: attempt to validate/set via detector
         success = pipeline.set_reference_frame(frame)
-        
+
         if success:
             return {"status": "success", "message": "Reference image set successfully"}
         else:
             return {"status": "error", "message": "No suitable face found in image"}
-            
+
     except Exception as e:
         return {"status": "error", "message": f"Error setting reference: {str(e)}"}
 
@@ -370,6 +374,30 @@ async def debug_models():
         "flags": flags,
         "pipeline_stats": stats,
     }
+
+
+@app.post("/debug/download_models")
+async def debug_download_models():
+    """Force model download attempt now and return updated file presence."""
+    if model_downloader is None:
+        return {"status": "error", "message": "model_downloader not available"}
+    try:
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(None, model_downloader.maybe_download)
+    except Exception as e:
+        ok = False
+        err = str(e)
+    # Reuse file presence logic
+    from pathlib import Path
+    lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
+    files = {}
+    for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx"):
+        p = lp_dir / name
+        files[name] = {"exists": p.exists(), "size_bytes": p.stat().st_size if p.exists() else 0}
+    resp = {"status": "success" if ok else "error", "files": files}
+    if not ok:
+        resp["message"] = locals().get('err', 'download failed')
+    return resp
 
 
 # Note: The Dockerfile / README launch with: uvicorn app:app --port 7860
