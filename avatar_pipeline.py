@@ -330,24 +330,38 @@ class RealTimeAvatarPipeline:
             fd_ok = False
 
         # Load async models and optional safe models in parallel
-        lp_task = self.liveportrait.load_models()
-        rvc_task = self.rvc.load_model()
-        scrfd_task = self.safe_loader.safe_load_scrfd()
-        lp_safe_task = self.safe_loader.safe_load_liveportrait()
+        try:
+            lp_task = self.liveportrait.load_models()
+            rvc_task = self.rvc.load_model()
+            # Guard safe_loader presence
+            if self.safe_loader is not None:
+                scrfd_task = self.safe_loader.safe_load_scrfd()
+                lp_safe_task = self.safe_loader.safe_load_liveportrait()
+            else:
+                async def _false():
+                    return False
+                scrfd_task = _false()
+                lp_safe_task = _false()
 
-        results = await asyncio.gather(lp_task, rvc_task, scrfd_task, lp_safe_task, return_exceptions=True)
-        # Normalize booleans from tasks
-        async_ok = sum(1 for r in results if r is True)
-        success_count = async_ok + (1 if fd_ok else 0)
-        logger.info(f"Loaded components - FaceDetector: {fd_ok}, LivePortrait: {results[0]}, RVC: {results[1]}, SCRFD(safe): {results[2]}, LivePortrait(safe): {results[3]}")
-        
-        if (fd_ok and (results[0] is True or results[3] is True)) or (fd_ok and results[1] is True):
-            # Require face detector + (any of liveportrait variants or RVC) to proceed
-            self.loaded = True
-            logger.info("Pipeline initialization successful")
-            return True
-        else:
-            logger.error("Pipeline initialization failed - insufficient models loaded")
+            results = await asyncio.gather(lp_task, rvc_task, scrfd_task, lp_safe_task, return_exceptions=True)
+            lp_ok = results[0] is True
+            rvc_ok = results[1] is True
+            scrfd_safe_ok = results[2] is True
+            lp_safe_ok = results[3] is True
+            logger.info(
+                f"Loaded components - FaceDetector: {fd_ok}, LivePortrait: {lp_ok}, RVC: {rvc_ok}, SCRFD(safe): {scrfd_safe_ok}, LivePortrait(safe): {lp_safe_ok}"
+            )
+
+            # Relaxed success criteria: proceed if ANY core component is available
+            if fd_ok or lp_ok or lp_safe_ok or rvc_ok or (self.landmark_reenactor is not None):
+                self.loaded = True
+                logger.info("Pipeline initialization successful (relaxed criteria)")
+                return True
+            else:
+                logger.error("Pipeline initialization failed - no components ready")
+                return False
+        except Exception as e:
+            logger.error(f"Pipeline initialization exception: {e}")
             return False
     
     def set_reference_frame(self, frame: np.ndarray):

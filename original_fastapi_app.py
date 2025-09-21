@@ -101,14 +101,20 @@ async def initialize_pipeline():
             try:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, model_downloader.maybe_download)
-            except Exception:
-                pass
+            except Exception as de:
+                # Log but continue; pipeline may still load with partial components
+                print(f"[init] downloader error: {de}")
         success = await pipeline.initialize()
         if success:
             pipeline_initialized = True
             return {"status": "success", "message": "Pipeline initialized successfully"}
         else:
-            return {"status": "error", "message": "Failed to initialize pipeline"}
+            # Provide more detail for debugging
+            try:
+                stats = pipeline.get_performance_stats()
+            except Exception:
+                stats = {}
+            return {"status": "error", "message": "Failed to initialize pipeline", "details": stats}
     except Exception as e:
         return {"status": "error", "message": f"Initialization error: {str(e)}"}
 

@@ -437,7 +437,8 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                             if b64:
                                 async def _set_ref_async(b64data: str):
                                     try:
-                                        if len(b64data) > 2_800_000:
+                                        # Allow moderately large images; cap to ~6MB base64 length
+                                        if len(b64data) > 6_000_000:
                                             channel.send(json.dumps({"type": "error", "message": "reference too large"}))
                                             return
                                         raw = base64.b64decode(b64data)
@@ -445,7 +446,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                                         # cv2.imdecode handles JPEG, PNG, WebP, etc. automatically
                                         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                                         if img is None:
-                                            channel.send(json.dumps({"type": "error", "message": "decode failed"}))
+                                            channel.send(json.dumps({"type": "error", "message": "decode failed (unsupported image or corrupt)"}))
                                             return
                                         # Downscale to max 512 for stability
                                         h, w = img.shape[:2]
