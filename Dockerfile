@@ -61,13 +61,15 @@ RUN mkdir -p \
 
 # Optional model downloader configuration (example URLs)
 ARG MIRAGE_DOWNLOAD_MODELS=1
-ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/appearance_feature_extractor.onnx"
-ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/motion_extractor.onnx"
-ARG MIRAGE_LP_GENERATOR_URL=""
+ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/appearance_feature_extractor.onnx"
+ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/motion_extractor.onnx"
+ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/generator.onnx"
+ARG MIRAGE_LP_STITCHING_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/stitching.onnx"
 ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
     MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
     MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL} \
-    MIRAGE_LP_GENERATOR_URL=${MIRAGE_LP_GENERATOR_URL}
+    MIRAGE_LP_GENERATOR_URL=${MIRAGE_LP_GENERATOR_URL} \
+    MIRAGE_LP_STITCHING_URL=${MIRAGE_LP_STITCHING_URL}
 # Skip model download during build - only download at runtime if needed
 # RUN python3 /app/model_downloader.py || true
 

@@ -5,6 +5,7 @@ Optional model downloader for deterministic builds.
     * MIRAGE_LP_APPEARANCE_URL
     * MIRAGE_LP_MOTION_URL (required for motion)
     * MIRAGE_LP_GENERATOR_URL (optional; enables full neural synthesis)
+    * MIRAGE_LP_STITCHING_URL (optional; some pipelines include extra stitching stage)
 - InsightFace models will still use the package cache; SCRFD will populate on first run.
 
 More robust with retries and alternative download methods (requests, huggingface_hub).
@@ -141,6 +142,17 @@ def maybe_download() -> bool:
             except Exception as e:
                 print(f'[downloader] ⚠️ Failed to download generator (optional): {e}')
                 # Don't mark as failure since generator is optional
+    # Optional stitching model
+    stitching_url = os.getenv('MIRAGE_LP_STITCHING_URL')
+    if stitching_url:
+        dest = LP_DIR / 'stitching.onnx'
+        if not dest.exists():
+            try:
+                print(f'[downloader] Downloading stitching model...')
+                _download(stitching_url, dest)
+                print(f'[downloader] ✅ Downloaded: {dest}')
+            except Exception as e:
+                print(f'[downloader] ⚠️ Failed to download stitching (optional): {e}')
     
     return success
 
