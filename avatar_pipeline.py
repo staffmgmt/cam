@@ -410,7 +410,12 @@ class RealTimeAvatarPipeline:
             liveportrait_ok = self.liveportrait_engine.load_models()
             if liveportrait_ok:
                 self.liveportrait_ready = True
-                logger.info("LivePortrait ONNX engine ready")
+                # Only use LivePortrait path if generator is available; otherwise prefer landmark fallback
+                if getattr(self.liveportrait_engine, 'generator_session', None) is None:
+                    self.use_liveportrait = False
+                    logger.warning("LivePortrait generator not found; using landmark reenactor fallback for motion")
+                else:
+                    logger.info("LivePortrait ONNX engine ready (with generator)")
             else:
                 logger.warning("LivePortrait ONNX engine failed to load - falling back to landmark reenactor")
                 self.use_liveportrait = False
@@ -501,6 +506,12 @@ class RealTimeAvatarPipeline:
                 if appearance_features is not None:
                     self.reference_appearance_features = appearance_features
                     logger.info("LivePortrait appearance features extracted successfully")
+                    # Also prepare landmark fallback in case we switch dynamically
+                    try:
+                        if self.landmark_reenactor is not None:
+                            self.landmark_reenactor.set_reference(frame)
+                    except Exception:
+                        pass
                     return True
                 else:
                     logger.warning("LivePortrait appearance extraction failed - falling back to landmark reenactor")
@@ -522,53 +533,6 @@ class RealTimeAvatarPipeline:
         except Exception as e:
             logger.error(f"Failed to set reference frame: {e}")
             return False
-            if fd_ok or lp_ok or lp_safe_ok or rvc_ok or (self.landmark_reenactor is not None):
-                self.loaded = True
-                logger.info("Pipeline initialization successful (relaxed criteria)")
-                return True
-            else:
-                logger.error("Pipeline initialization failed - no components ready")
-                return False
-        except Exception as e:
-            logger.error(f"Pipeline initialization exception: {e}")
-            return False
-    
-    def set_reference_frame(self, frame: np.ndarray):
-        """Set reference frame for avatar"""
-        try:
-            # Landmark reenactor reference if enabled
-            if self.landmark_reenactor is not None:
-                if self.landmark_reenactor.set_reference(frame):
-                    self.reference_frame = frame.copy()
-                    self.current_face_bbox = None
-                    logger.info("Reference set via landmark reenactor")
-                    return True
-            # Detect face in reference frame
-            bbox = None
-            confidence = 0.0
-            # Prefer safe SCRFD if available
-            try:
-                sb = self.safe_loader.safe_detect_face(frame)
-                if sb is not None:
-                    bbox = sb
-                    confidence = 1.0  # safe path doesn't provide score; assume strong if detected
-            except Exception:
-                pass
-            if bbox is None:
-                bbox, confidence = self.face_detector.detect_face(frame, 0)
-            
-            if bbox is not None and confidence >= self.config.face_detection_threshold:
-                self.reference_frame = frame.copy()
-                self.current_face_bbox = bbox
-                logger.info(f"Reference frame set with confidence: {confidence:.3f}")
-                return True
-            else:
-                logger.warning("No suitable face found in reference frame")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error setting reference frame: {e}")
-            return False
     
     def process_video_frame(self, frame: np.ndarray, frame_idx: int) -> np.ndarray:
         """Process single video frame for real-time animation"""
@@ -580,8 +544,12 @@ class RealTimeAvatarPipeline:
                 print("[AVATAR] No reference image - showing live camera feed")
                 return frame
             
-            # LivePortrait neural animation (preferred method)
-            if self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready and self.reference_appearance_features is not None:
+            # LivePortrait neural animation (preferred method, only if generator present)
+            if (
+                self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready
+                and getattr(self.liveportrait_engine, 'generator_session', None) is not None
+                and self.reference_appearance_features is not None
+            ):
                 try:
                     # Detect and align face for motion extraction
                     driving_frame = frame
@@ -603,7 +571,11 @@ class RealTimeAvatarPipeline:
                         # Resize to match input frame size
                         if animated_frame.shape[:2] != frame.shape[:2]:
                             animated_frame = cv2.resize(animated_frame, (frame.shape[1], frame.shape[0]))
-                        
+                        # Track method
+                        try:
+                            self.last_method = 'liveportrait'
+                        except Exception:
+                            pass
                         self._update_stats("liveportrait", start_time)
                         print(f"[AVATAR] LivePortrait animation: {animated_frame.shape}")
                         return animated_frame
@@ -618,7 +590,14 @@ class RealTimeAvatarPipeline:
             if self.landmark_reenactor is not None:
                 try:
                     animated_frame = self.landmark_reenactor.reenact(frame)
-                    if animated_frame is not None and animated_frame.shape == frame.shape:
+                    if animated_frame is not None:
+                        # Ensure size matches input
+                        if animated_frame.shape[:2] != frame.shape[:2]:
+                            animated_frame = cv2.resize(animated_frame, (frame.shape[1], frame.shape[0]))
+                        try:
+                            self.last_method = 'landmark'
+                        except Exception:
+                            pass
                         self._update_stats("landmark", start_time)
                         print(f"[AVATAR] Landmark reenactor animation: {animated_frame.shape}")
                         return animated_frame
@@ -633,6 +612,10 @@ class RealTimeAvatarPipeline:
                 # Simple alpha blend to create basic avatar effect
                 alpha = 0.7
                 result = cv2.addWeighted(ref_resized, alpha, frame, 1-alpha, 0)
+                try:
+                    self.last_method = 'simple_blend'
+                except Exception:
+                    pass
                 self._update_stats("simple_blend", start_time)
                 print(f"[AVATAR] Production fallback alpha blend: {ref_resized.shape} + {frame.shape} -> {result.shape}")
                 return result
@@ -688,6 +671,7 @@ class RealTimeAvatarPipeline:
                 "loaded": self.loaded,
                 "reference_set": self.reference_frame is not None,
                 "liveportrait_ready": self.liveportrait_ready,
+                "liveportrait_enabled": bool(self.use_liveportrait and self.liveportrait_ready and getattr(self.liveportrait_engine, 'generator_session', None) is not None),
                 "frame_count": len(self.frame_times),
                 "audio_count": len(self.audio_times)
             }
@@ -696,6 +680,9 @@ class RealTimeAvatarPipeline:
                 avg_frame_time = np.mean(list(self.frame_times))
                 stats["avg_frame_time_ms"] = avg_frame_time * 1000
                 stats["estimated_fps"] = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+                # Aliases for client UI expectations
+                stats["avg_video_latency_ms"] = stats["avg_frame_time_ms"]
+                stats["video_fps"] = stats["estimated_fps"]
             
             if self.audio_times:
                 stats["avg_audio_time_ms"] = np.mean(list(self.audio_times)) * 1000
@@ -704,6 +691,9 @@ class RealTimeAvatarPipeline:
             if self.liveportrait_engine:
                 lp_stats = self.liveportrait_engine.get_performance_stats()
                 stats["liveportrait"] = lp_stats
+            # Last method used (if tracked)
+            if hasattr(self, 'last_method'):
+                stats["last_method"] = getattr(self, 'last_method')
             
             return stats
             

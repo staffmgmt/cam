@@ -253,7 +253,8 @@
       const fps = (p.video_fps || 0).toFixed(1);
       const lat = Math.round(p.avg_video_latency_ms || 0);
       const gpu = (p.gpu_memory_used !== undefined) ? (p.gpu_memory_used.toFixed(2)+'GB') : '--';
-      els.perf.textContent = `Latency: ${lat} ms · FPS: ${fps} · GPU: ${gpu}`;
+      const method = p.last_method ? String(p.last_method) : '--';
+      els.perf.textContent = `Latency: ${lat} ms · FPS: ${fps} · GPU: ${gpu} · Mode: ${method}`;
     } catch(_){}
   }
 

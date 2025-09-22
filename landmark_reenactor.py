@@ -23,6 +23,7 @@ class LandmarkReenactor:
         self.target_size = target_size
         self.ref_img: Optional[np.ndarray] = None
         self.ref_landmarks: Optional[np.ndarray] = None  # (N,2)
+        self.ref_mask: Optional[np.ndarray] = None  # (H,W) float32 in [0,1]
         self._mp_face_mesh = None
         if MP_AVAILABLE:
             self._mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
@@ -53,6 +54,16 @@ class LandmarkReenactor:
                 return False
             self.ref_img = ref
             self.ref_landmarks = lm
+            # Build a soft face mask from the convex hull of landmarks
+            try:
+                hull = cv2.convexHull(self.ref_landmarks.astype(np.float32))
+                mask = np.zeros(self.target_size, dtype=np.uint8)
+                cv2.fillConvexPoly(mask, hull.astype(np.int32), 255)
+                # Feather edges for seamless blending
+                mask = cv2.GaussianBlur(mask, (31, 31), sigmaX=0)
+                self.ref_mask = (mask.astype(np.float32) / 255.0)
+            except Exception:
+                self.ref_mask = None
             return True
         except Exception:
             return False
@@ -69,7 +80,33 @@ class LandmarkReenactor:
             M, _ = cv2.estimateAffinePartial2D(self.ref_landmarks, drv_lm, method=cv2.LMEDS)
             if M is None:
                 return drv
-            warped = cv2.warpAffine(self.ref_img, M, self.target_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-            return warped
+            # Warp reference face and its mask
+            warped_face = cv2.warpAffine(
+                self.ref_img, M, self.target_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+            )
+            if self.ref_mask is not None:
+                warped_mask = cv2.warpAffine(
+                    self.ref_mask, M, self.target_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0
+                )
+            else:
+                # Fallback: regenerate a quick hull-based mask from warped landmarks
+                try:
+                    hull = cv2.convexHull(drv_lm.astype(np.float32))
+                    mk = np.zeros(self.target_size, dtype=np.uint8)
+                    cv2.fillConvexPoly(mk, hull.astype(np.int32), 255)
+                    warped_mask = cv2.GaussianBlur(mk, (31, 31), sigmaX=0).astype(np.float32) / 255.0
+                except Exception:
+                    warped_mask = None
+            # Composite onto the driving frame using the mask
+            if warped_mask is not None:
+                if warped_mask.ndim == 2:
+                    mask3 = np.dstack([warped_mask]*3)
+                else:
+                    mask3 = warped_mask
+                out = (warped_face.astype(np.float32) * mask3 + drv.astype(np.float32) * (1.0 - mask3)).astype(np.uint8)
+                return out
+            else:
+                # If no mask, return warped face as before
+                return warped_face
         except Exception:
             return drv
