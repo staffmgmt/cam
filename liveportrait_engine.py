@@ -52,27 +52,14 @@ class LivePortraitONNX:
         self.inference_times = []
         
     def _get_onnx_providers(self) -> list[str]:
-        """Get optimal ONNX execution providers"""
-        providers = []
-        
-        if self.device == "cuda" and "CUDAExecutionProvider" in ort.get_available_providers():
-            providers.append(("CUDAExecutionProvider", {
-                # Performance optimizations for real-time inference
-                "cudnn_conv_algo_search": "HEURISTIC",
-                "do_copy_in_default_stream": True,
-                "cudnn_conv_use_max_workspace": True,
-                "arena_extend_strategy": "kSameAsRequested",  # Reduce memory fragmentation
-                "gpu_mem_limit": 2 * 1024 * 1024 * 1024,  # 2GB GPU memory limit
-                "enable_cuda_graph": True,  # Enable CUDA graph optimization
-            }))
-            
-        # Fallback to CPU with optimizations
-        providers.append(("CPUExecutionProvider", {
-            "intra_op_num_threads": 4,  # Limit CPU threads for real-time
-            "execution_mode": "ORT_SEQUENTIAL",  # Sequential execution for lower latency
-            "enable_cpu_mem_arena": True,
-        }))
-        
+        """Get optimal ONNX execution providers (with safe defaults)."""
+        avail = ort.get_available_providers()
+        logger.info(f"ONNX Runtime available providers: {avail}")
+        providers: list = []
+        if self.device == "cuda" and "CUDAExecutionProvider" in avail:
+            # Start with a minimal, widely compatible config
+            providers.append("CUDAExecutionProvider")
+        providers.append("CPUExecutionProvider")
         return providers
     
     def load_models(self) -> bool:
@@ -90,11 +77,20 @@ class LivePortraitONNX:
             # Load appearance feature extractor (required)
             if self.appearance_model_path.exists():
                 logger.info(f"Loading appearance model: {self.appearance_model_path}")
-                self.appearance_session = ort.InferenceSession(
-                    str(self.appearance_model_path), 
-                    providers=providers,
-                    sess_options=sess_options
-                )
+                try:
+                    self.appearance_session = ort.InferenceSession(
+                        str(self.appearance_model_path), 
+                        providers=providers,
+                        sess_options=sess_options
+                    )
+                except Exception as e:
+                    logger.warning(f"Appearance model failed with tuned providers, retrying basic: {e}")
+                    # Retry with default provider list only
+                    basic_providers = [p for p in providers]
+                    self.appearance_session = ort.InferenceSession(
+                        str(self.appearance_model_path),
+                        providers=basic_providers
+                    )
             else:
                 logger.error(f"Appearance model not found: {self.appearance_model_path}")
                 return False
@@ -102,11 +98,19 @@ class LivePortraitONNX:
             # Load motion extractor (required)
             if self.motion_model_path.exists():
                 logger.info(f"Loading motion model: {self.motion_model_path}")
-                self.motion_session = ort.InferenceSession(
-                    str(self.motion_model_path),
-                    providers=providers,
-                    sess_options=sess_options
-                )
+                try:
+                    self.motion_session = ort.InferenceSession(
+                        str(self.motion_model_path),
+                        providers=providers,
+                        sess_options=sess_options
+                    )
+                except Exception as e:
+                    logger.warning(f"Motion model failed with tuned providers, retrying basic: {e}")
+                    basic_providers = [p for p in providers]
+                    self.motion_session = ort.InferenceSession(
+                        str(self.motion_model_path),
+                        providers=basic_providers
+                    )
             else:
                 logger.error(f"Motion model not found: {self.motion_model_path}")
                 return False
@@ -121,12 +125,31 @@ class LivePortraitONNX:
                         gen_path = p
                         break
             if gen_path is not None:
+                # Optionally create an alias at generator.onnx for diagnostics endpoints
+                try:
+                    if gen_path != self.generator_model_path and not self.generator_model_path.exists():
+                        # create a lightweight copy to keep tooling simple
+                        try:
+                            import shutil
+                            shutil.copyfile(gen_path, self.generator_model_path)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 logger.info(f"Loading generator model: {gen_path}")
-                self.generator_session = ort.InferenceSession(
-                    str(gen_path),
-                    providers=providers,
-                    sess_options=sess_options
-                )
+                try:
+                    self.generator_session = ort.InferenceSession(
+                        str(gen_path),
+                        providers=providers,
+                        sess_options=sess_options
+                    )
+                except Exception as e:
+                    logger.warning(f"Generator failed with tuned providers, retrying basic: {e}")
+                    basic_providers = [p for p in providers]
+                    self.generator_session = ort.InferenceSession(
+                        str(gen_path),
+                        providers=basic_providers
+                    )
             else:
                 logger.info("Generator model not available - using motion-based warping")
             
