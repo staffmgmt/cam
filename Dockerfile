@@ -29,6 +29,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     libsndfile1 \
+    # CUDA runtime libs for ORT CUDA provider
+    cuda-cudart-12-1 \
+    cuda-cupti-12-1 \
+    libcublas-12-1 \
+    libcublaslt-12-1 \
+    libcufft-12-1 \
+    libcurand-12-1 \
+    libcusolver-12-1 \
+    libcusparse-12-1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

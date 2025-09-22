@@ -57,6 +57,7 @@ class SCRFDFaceDetector:
         self.config = config
         self.model = None
         self.loaded = False
+        self._default_det_size = (640, 640)
         
     async def load_model(self):
         """Load SCRFD face detection model"""
@@ -70,7 +71,7 @@ class SCRFDFaceDetector:
             
             # Initialize InsightFace with SCRFD
             self.model = FaceAnalysis(providers=['CUDAExecutionProvider', 'CPUExecutionProvider'] if self.config.device == "cuda" else ['CPUExecutionProvider'])
-            self.model.prepare(ctx_id=0 if self.config.device == "cuda" else -1, det_size=(640, 640))
+            self.model.prepare(ctx_id=0 if self.config.device == "cuda" else -1, det_size=self._default_det_size)
             
             self.loaded = True
             logger.info("SCRFD face detector loaded successfully")
@@ -91,6 +92,21 @@ class SCRFDFaceDetector:
             
             # Detect faces
             faces = self.model.get(rgb_image)
+            # Retry at larger detection sizes if nothing found
+            if (faces is None or len(faces) == 0):
+                for det_size in [(960, 960), (1280, 1280)]:
+                    try:
+                        self.model.prepare(ctx_id=0 if self.config.device == "cuda" else -1, det_size=det_size)
+                        faces = self.model.get(rgb_image)
+                        if faces is not None and len(faces) > 0:
+                            break
+                    except Exception as _:
+                        pass
+                # Restore default det size
+                try:
+                    self.model.prepare(ctx_id=0 if self.config.device == "cuda" else -1, det_size=self._default_det_size)
+                except Exception:
+                    pass
             
             results = []
             for face in faces:

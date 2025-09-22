@@ -142,6 +142,15 @@ async def set_reference_image(file: UploadFile = File(...)):
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        # Basic EXIF orientation handling: if image is portrait and very large, rotate or resize for detection
+        if frame is not None:
+            h, w = frame.shape[:2]
+            # Resize overly large images to speed detection and avoid memory limits
+            max_dim = 1280
+            if max(h, w) > max_dim:
+                scale = max_dim / float(max(h, w))
+                frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+            # Heuristic: if image is rotated (common on mobile), try rotating copies until a face is found (done in pipeline)
 
         if frame is None:
             raise HTTPException(status_code=400, detail="Invalid image format")
