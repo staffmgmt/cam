@@ -1,7 +1,7 @@
 """
-Real-time AI Avatar Pipeline
-Integrates LivePortrait + RVC for real-time face animation and voice conversion
-Optimized for A10 GPU with <250ms latency target
+Neural-only Real-time AI Avatar Pipeline
+- Single production route: SCRFD face detection + LivePortrait ONNX (appearance, motion, generator)
+- No fallbacks or feature flags; initialization fails if models are unavailable
 """
 import torch
 import torch.nn.functional as F
@@ -22,43 +22,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Optional imports - make them resilient
-try:
-    from virtual_camera import get_virtual_camera_manager
-except Exception as e:
-    logger.warning(f"virtual_camera not available: {e}")
-    get_virtual_camera_manager = None
-
-try:
-    from enhanced_metrics import get_enhanced_metrics, enhance_existing_stats
-except Exception as e:
-    logger.warning(f"enhanced_metrics not available: {e}")
-    get_enhanced_metrics = None
-    enhance_existing_stats = lambda x: x
-
-try:
-    from safe_model_integration import get_safe_model_loader
-except Exception as e:
-    logger.warning(f"safe_model_integration not available: {e}")
-    get_safe_model_loader = None
-
-try:
-    from landmark_reenactor import LandmarkReenactor, MP_AVAILABLE
-except Exception as e:
-    logger.warning(f"landmark_reenactor not available: {e}")
-    LandmarkReenactor = None
-    MP_AVAILABLE = False
-
+get_virtual_camera_manager = None
+get_enhanced_metrics = None
+enhance_existing_stats = lambda x: x
+get_safe_model_loader = None
+LandmarkReenactor = None
+MP_AVAILABLE = False
 try:
     from liveportrait_engine import get_liveportrait_engine
 except Exception as e:
-    logger.warning(f"liveportrait_engine not available: {e}")
+    logger.error(f"liveportrait_engine not available: {e}")
     get_liveportrait_engine = None
-
-try:
-    from realtime_optimizer import get_realtime_optimizer
-except Exception as e:
-    logger.warning(f"realtime_optimizer not available: {e}")
-    get_realtime_optimizer = None
+get_realtime_optimizer = None
 
 class ModelConfig:
     """Configuration for AI models"""
@@ -66,7 +41,7 @@ class ModelConfig:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.face_detection_threshold = 0.85
         self.face_redetect_threshold = 0.70
-        self.detect_interval = 5  # frames
+        self.detect_interval = 5  # frames between full detection (track in-between)
         self.target_fps = 20
         self.video_resolution = (512, 512)
         self.audio_sample_rate = 16000
@@ -216,7 +191,7 @@ class LivePortraitModel:
             
             # Placeholder: Real LivePortrait loading not implemented here.
             # Defer to safe_model_integration ONNX path instead.
-            logger.info("LivePortrait (native) not implemented; using safe ONNX path when available")
+            logger.info("LivePortrait (native) not implemented; using ONNX engine path")
             self.loaded = False
             return False
             
@@ -302,9 +277,9 @@ class RVCVoiceConverter:
             
             # Load the actual RVC model
             # Placeholder for RVC model loading
-            logger.info("RVC model loaded successfully")
-            self.loaded = True
-            return True
+            # Voice conversion is out of scope for neural-only video path; keep disabled
+            self.loaded = False
+            return False
             
         except Exception as e:
             logger.error(f"Failed to load RVC model: {e}")
@@ -342,34 +317,28 @@ class RealTimeAvatarPipeline:
     """Main real-time AI avatar pipeline"""
     def __init__(self):
         self.config = ModelConfig()
-        # Enforce fully neural mode (no fallbacks) if requested
-        self.require_neural = os.getenv("MIRAGE_REQUIRE_NEURAL", "0").lower() in ("1","true","yes","on")
+        # Always neural-only
+        self.require_neural = True
         
         # Face detection systems
-        self.face_detector = SCRFDFaceDetector(self.config)  # Use SCRFD instead of basic detector
-        self.scrfd_detector = SCRFDFaceDetector(self.config)  # Explicit SCRFD instance
+        self.scrfd_detector = SCRFDFaceDetector(self.config)
         
-    # Animation engines
+        # Animation engine (required)
         self.liveportrait = LivePortraitModel(self.config)
         self.liveportrait_engine = get_liveportrait_engine() if get_liveportrait_engine else None
         
-        # Voice conversion
+        # Voice conversion disabled in this build
         self.rvc = RVCVoiceConverter(self.config)
         
-        # Safe model loader
-        self.safe_loader = get_safe_model_loader()
+    # Safe model loader (optional, not required in neural-only path)
+    self.safe_loader = get_safe_model_loader() if get_safe_model_loader else None
         
-        # Auto-enable landmark reenactor unless fully neural mode enforced
-        lm_env = os.getenv("MIRAGE_ENABLE_LANDMARK_REENACTOR", "auto").lower()
-        self.landmark_mode = (not self.require_neural) and (
-            (lm_env in ("1","true","yes","on")) or
-            (lm_env == "auto" and MP_AVAILABLE)
-        ) and not (lm_env in ("0","false","no","off"))
-        self.landmark_reenactor = LandmarkReenactor(target_size=self.config.video_resolution) if (self.landmark_mode and LandmarkReenactor is not None) else None
+        # No landmark reenactor or other fallbacks in neural-only mode
+        self.landmark_reenactor = None
         
         # Performance optimization
-        self.optimizer = get_realtime_optimizer()
-        self.virtual_camera_manager = get_virtual_camera_manager()
+        self.optimizer = None
+        self.virtual_camera_manager = None
         
         # Frame buffers for real-time processing
         self.video_buffer = deque(maxlen=5)
@@ -380,21 +349,24 @@ class RealTimeAvatarPipeline:
         self.reference_appearance_features = None
         self.current_face_bbox = None
         
-    # Animation method preference
-    self.use_liveportrait = True  # Prefer LivePortrait over landmark reenactor
+        # LivePortrait is the only path
+        self.use_liveportrait = True
         self.liveportrait_ready = False
         
         # Performance tracking
         self.frame_times = deque(maxlen=100)
         self.audio_times = deque(maxlen=100)
-        self._metrics = get_enhanced_metrics()
+    self._metrics = get_enhanced_metrics() if get_enhanced_metrics else None
         
         # Processing locks
         self.video_lock = threading.Lock()
         self.audio_lock = threading.Lock()
         
-        # Virtual camera
         self.virtual_camera = None
+
+        # ROI smoothing for stable crops
+        self._last_bbox = None  # [x1,y1,x2,y2]
+        self._bbox_ema_alpha = 0.8  # higher = smoother (more inertia)
         
         self.loaded = False
         
@@ -402,45 +374,33 @@ class RealTimeAvatarPipeline:
         """Initialize all models"""
         logger.info("Initializing real-time avatar pipeline...")
         
-        # Initialize SCRFD face detection (non-fatal if fails; we'll use landmark fallback)
+        # Initialize SCRFD face detection (required)
         scrfd_ok = await self.scrfd_detector.load_model()
         if scrfd_ok:
             logger.info("SCRFD face detection ready")
+        else:
+            logger.error("SCRFD failed to load (required)")
+            return False
         
-        # Initialize LivePortrait ONNX engine
+        # Initialize LivePortrait ONNX engine (required)
         if self.liveportrait_engine:
             liveportrait_ok = self.liveportrait_engine.load_models()
             if liveportrait_ok:
                 self.liveportrait_ready = True
                 has_gen = getattr(self.liveportrait_engine, 'generator_session', None) is not None
                 if not has_gen:
-                    if self.require_neural:
-                        logger.error("MIRAGE_REQUIRE_NEURAL=1 but generator.onnx not found")
-                        return False
-                    self.use_liveportrait = False
-                    logger.warning("LivePortrait generator not found; using fallbacks")
+                    logger.error("LivePortrait generator.onnx not found (required)")
+                    return False
                 else:
                     logger.info("LivePortrait ONNX engine ready (with generator)")
             else:
-                if self.require_neural:
-                    logger.error("MIRAGE_REQUIRE_NEURAL=1 but LivePortrait models failed to load")
-                    return False
-                logger.warning("LivePortrait ONNX engine failed to load - using fallbacks")
-                self.use_liveportrait = False
-        else:
-            if self.require_neural:
-                logger.error("MIRAGE_REQUIRE_NEURAL=1 but liveportrait_engine unavailable")
+                logger.error("LivePortrait models failed to load (required)")
                 return False
-            logger.warning("LivePortrait engine not available - using fallbacks")
-            self.use_liveportrait = False
+        else:
+            logger.error("LivePortrait engine unavailable (required)")
+            return False
         
-        # Initialize legacy components if needed (kept for compatibility)
-        loop = asyncio.get_running_loop()
-        try:
-            fd_ok = await loop.run_in_executor(None, self.face_detector.load_model)
-        except Exception as e:
-            logger.error(f"Face detector load failed: {e}")
-            fd_ok = False
+        fd_ok = True  # legacy detector unused
 
         # Load async models and optional safe models in parallel
         try:
@@ -476,18 +436,11 @@ class RealTimeAvatarPipeline:
             logger.info(f"Model loading results: FD={fd_ok}, LP={lp_ok}, RVC={rvc_ok}, SCRFD_safe={scrfd_safe_ok}, LP_safe={lp_safe_ok}")
             
             # Mark as loaded
-            if self.require_neural:
-                # Fully neural mode requires LivePortrait with generator
-                self.loaded = bool(self.use_liveportrait and self.liveportrait_ready and getattr(self.liveportrait_engine, 'generator_session', None) is not None)
-            else:
-                # Any mechanism OK
-                self.loaded = scrfd_ok or fd_ok or (self.landmark_reenactor is not None)
+            # Fully neural-only readiness
+            self.loaded = bool(self.use_liveportrait and self.liveportrait_ready and getattr(self.liveportrait_engine, 'generator_session', None) is not None)
             
             if self.loaded:
-                mode = (
-                    "liveportrait" if (self.use_liveportrait and self.liveportrait_ready and getattr(self.liveportrait_engine, 'generator_session', None) is not None) else
-                    ("landmark" if (self.landmark_reenactor is not None) else "simple_blend")
-                )
+                mode = "liveportrait"
                 logger.info(f"Avatar pipeline initialized successfully (mode={mode})")
                 return True
             else:
@@ -504,56 +457,33 @@ class RealTimeAvatarPipeline:
         """Set reference frame for avatar animation"""
         try:
             logger.info(f"Setting reference frame: {frame.shape}")
-            
-            # Detect face in reference frame using SCRFD
-            if hasattr(self, 'scrfd_detector') and self.scrfd_detector.loaded:
-                faces = self.scrfd_detector.detect_faces(frame)
-                if faces:
-                    best_face = self.scrfd_detector.get_best_face(faces)
-                    if best_face:
-                        # Crop and align face for LivePortrait
-                        aligned_face = self.scrfd_detector.crop_and_align_face(frame, best_face, target_size=(512, 512))
-                        if aligned_face is not None:
-                            frame = aligned_face
-                            logger.info("Using SCRFD-aligned face for reference")
+            # Detect face in reference frame using SCRFD (required)
+            faces = self.scrfd_detector.detect_faces(frame)
+            if not faces:
+                logger.error("No face detected in reference image")
+                return False
+            best_face = self.scrfd_detector.get_best_face(faces)
+            aligned_face = self.scrfd_detector.crop_and_align_face(frame, best_face, target_size=(512, 512))
+            if aligned_face is None:
+                logger.error("Failed to align reference face")
+                return False
+            frame = aligned_face
+            self._last_bbox = best_face['bbox'].astype(np.float32)
             
             # Store reference frame
             self.reference_frame = frame.copy()
             
-            # Extract appearance features using LivePortrait if available
-            if self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready:
-                appearance_features = self.liveportrait_engine.extract_appearance_features(frame)
-                if appearance_features is not None:
-                    self.reference_appearance_features = appearance_features
-                    logger.info("LivePortrait appearance features extracted successfully")
-                    # Also prepare landmark fallback in case we switch dynamically
-                    if self.landmark_reenactor is not None:
-                        try:
-                            self.landmark_reenactor.set_reference(frame)
-                        except Exception:
-                            pass
-                    return True
-                else:
-                    if self.require_neural:
-                        logger.error("MIRAGE_REQUIRE_NEURAL=1 but appearance extraction failed")
-                        return False
-                    logger.warning("LivePortrait appearance extraction failed - falling back")
-                    self.use_liveportrait = False
-            
-            # Fallback to landmark reenactor if available (disabled when require_neural)
-            if (not self.require_neural) and (self.landmark_reenactor is not None):
-                success = self.landmark_reenactor.set_reference(frame)
-                if success:
-                    logger.info("Landmark reenactor reference set successfully")
-                    return True
-                else:
-                    logger.warning("Landmark reenactor reference setting failed")
-            
-            # Final fallback - only allowed if not requiring neural
-            if not self.require_neural:
-                logger.info("Using simple frame storage as fallback")
-                return True
-            return False
+            # Extract appearance features (required)
+            if not (self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready):
+                logger.error("LivePortrait engine not ready for reference extraction")
+                return False
+            appearance_features = self.liveportrait_engine.extract_appearance_features(frame)
+            if appearance_features is None:
+                logger.error("Appearance feature extraction failed")
+                return False
+            self.reference_appearance_features = appearance_features
+            logger.info("LivePortrait appearance features extracted successfully")
+            return True
             
         except Exception as e:
             logger.error(f"Failed to set reference frame: {e}")
@@ -566,28 +496,33 @@ class RealTimeAvatarPipeline:
         try:
             # Check if we have a reference
             if self.reference_frame is None:
-                print("[AVATAR] No reference image - showing live camera feed")
+                logger.error("No reference set")
                 return frame
             
-            # LivePortrait neural animation (required if require_neural)
+            # LivePortrait neural animation (only path)
             if (
                 self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready
                 and getattr(self.liveportrait_engine, 'generator_session', None) is not None
                 and self.reference_appearance_features is not None
             ):
                 try:
-                    # Detect and align face for motion extraction
+                    # Detect and align face for motion extraction with simple EMA smoothing
                     driving_frame = frame
-                    
-                    # Use SCRFD to detect face in driving frame
-                    if hasattr(self, 'scrfd_detector') and self.scrfd_detector.loaded:
-                        faces = self.scrfd_detector.detect_faces(frame)
-                        if faces:
-                            best_face = self.scrfd_detector.get_best_face(faces)
-                            if best_face:
-                                aligned_face = self.scrfd_detector.crop_and_align_face(frame, best_face, target_size=(512, 512))
-                                if aligned_face is not None:
-                                    driving_frame = aligned_face
+                    faces = self.scrfd_detector.detect_faces(frame) if (self.frame_times.__len__() % self.config.detect_interval == 0 or self._last_bbox is None) else []
+                    if faces:
+                        best_face = self.scrfd_detector.get_best_face(faces)
+                        bbox = best_face['bbox'].astype(np.float32)
+                        if self._last_bbox is not None:
+                            a = self._bbox_ema_alpha
+                            self._last_bbox = a * self._last_bbox + (1.0 - a) * bbox
+                        else:
+                            self._last_bbox = bbox
+                    if self._last_bbox is not None:
+                        # Use smoothed bbox to crop
+                        fake_face = {'bbox': self._last_bbox.astype(int), 'landmarks': None, 'confidence': 1.0}
+                        aligned_face = self.scrfd_detector.crop_and_align_face(frame, fake_face, target_size=(512, 512))
+                        if aligned_face is not None:
+                            driving_frame = aligned_face
                     
                     # Generate animated frame using LivePortrait
                     animated_frame = self.liveportrait_engine.animate_frame(driving_frame)
@@ -602,58 +537,19 @@ class RealTimeAvatarPipeline:
                         except Exception:
                             pass
                         self._update_stats("liveportrait", start_time)
-                        print(f"[AVATAR] LivePortrait animation: {animated_frame.shape}")
                         return animated_frame
                     else:
-                        print("[AVATAR] LivePortrait animation failed - falling back")
+                        logger.error("LivePortrait animation returned None")
                         
                 except Exception as e:
-                    print(f"[AVATAR] LivePortrait error: {e}")
                     logger.error(f"LivePortrait animation error: {e}")
-                    if self.require_neural:
-                        return frame
-            
-            # Landmark reenactor fallback (disabled when require_neural)
-            if (not self.require_neural) and (self.landmark_reenactor is not None):
-                try:
-                    animated_frame = self.landmark_reenactor.reenact(frame)
-                    if animated_frame is not None:
-                        # Ensure size matches input
-                        if animated_frame.shape[:2] != frame.shape[:2]:
-                            animated_frame = cv2.resize(animated_frame, (frame.shape[1], frame.shape[0]))
-                        try:
-                            self.last_method = 'landmark'
-                        except Exception:
-                            pass
-                        self._update_stats("landmark", start_time)
-                        print(f"[AVATAR] Landmark reenactor animation: {animated_frame.shape}")
-                        return animated_frame
-                except Exception as e:
-                    print(f"[AVATAR] Landmark reenactor error: {e}")
-                    logger.error(f"Landmark reenactor error: {e}")
-            
-            # No fallbacks when require_neural; return original frame if neural path failed
-            if self.require_neural:
-                try:
-                    self.last_method = 'neural_required_not_ready'
-                except Exception:
-                    pass
                 return frame
-            # Simple alpha-blend fallback
+            # If we reach here, neural path could not produce an output for this frame
             try:
-                h, w = frame.shape[:2]
-                ref_resized = cv2.resize(self.reference_frame, (w, h))
-                alpha = 0.7
-                result = cv2.addWeighted(ref_resized, alpha, frame, 1-alpha, 0)
-                try:
-                    self.last_method = 'simple_blend'
-                except Exception:
-                    pass
-                self._update_stats("simple_blend", start_time)
-                print(f"[AVATAR] Production fallback alpha blend: {ref_resized.shape} + {frame.shape} -> {result.shape}")
-                return result
+                self.last_method = 'liveportrait_error'
             except Exception:
-                return frame
+                pass
+            return frame
                 
         except Exception as e:
             logger.error(f"Video frame processing error: {e}")
@@ -665,11 +561,7 @@ class RealTimeAvatarPipeline:
             elapsed = time.time() - start_time
             self.frame_times.append(elapsed)
         
-        if self._metrics:
-            try:
-                self._metrics.record_frame_processing(method, elapsed if start_time else 0.0)
-            except Exception:
-                pass
+        # metrics backend optional; keep quiet if missing
     
     def process_audio_chunk(self, audio_chunk: np.ndarray) -> np.ndarray:
         """Process audio chunk with voice conversion"""
@@ -719,7 +611,7 @@ class RealTimeAvatarPipeline:
             if self.audio_times:
                 stats["avg_audio_time_ms"] = np.mean(list(self.audio_times)) * 1000
             
-            # LivePortrait engine stats
+                # LivePortrait engine stats
             if self.liveportrait_engine:
                 lp_stats = self.liveportrait_engine.get_performance_stats()
                 stats["liveportrait"] = lp_stats

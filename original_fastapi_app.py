@@ -365,10 +365,7 @@ async def debug_models():
         stats = {}
     # Lightweight flags
     flags = {
-        "MIRAGE_ENABLE_SCRFD": os.getenv("MIRAGE_ENABLE_SCRFD"),
-        "MIRAGE_ENABLE_LIVEPORTRAIT": os.getenv("MIRAGE_ENABLE_LIVEPORTRAIT"),
         "MIRAGE_DOWNLOAD_MODELS": os.getenv("MIRAGE_DOWNLOAD_MODELS"),
-        "MIRAGE_ENABLE_LANDMARK_REENACTOR": os.getenv("MIRAGE_ENABLE_LANDMARK_REENACTOR"),
         "MIRAGE_REQUIRE_NEURAL": os.getenv("MIRAGE_REQUIRE_NEURAL"),
     }
     return {
