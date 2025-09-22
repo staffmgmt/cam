@@ -31,7 +31,13 @@ class LivePortraitONNX:
         # Model paths
         self.appearance_model_path = self.models_dir / "appearance_feature_extractor.onnx"
         self.motion_model_path = self.models_dir / "motion_extractor.onnx"
-        self.generator_model_path = self.models_dir / "generator.onnx"  # If available
+        # The upstream repo provides generator as warping_spade.onnx (or warping_spade-fix.onnx).
+        # Prefer a local alias 'generator.onnx' but fall back to these names if missing.
+        self.generator_model_path = self.models_dir / "generator.onnx"
+        self._alt_generator_paths = [
+            self.models_dir / "warping_spade.onnx",
+            self.models_dir / "warping_spade-fix.onnx",
+        ]
         
         # ONNX Runtime sessions
         self.appearance_session: Optional[ort.InferenceSession] = None
@@ -106,10 +112,18 @@ class LivePortraitONNX:
                 return False
             
             # Load generator if available (optional - can use warping fallback)
+            gen_path = None
             if self.generator_model_path.exists():
-                logger.info(f"Loading generator model: {self.generator_model_path}")
+                gen_path = self.generator_model_path
+            else:
+                for p in self._alt_generator_paths:
+                    if p.exists():
+                        gen_path = p
+                        break
+            if gen_path is not None:
+                logger.info(f"Loading generator model: {gen_path}")
                 self.generator_session = ort.InferenceSession(
-                    str(self.generator_model_path),
+                    str(gen_path),
                     providers=providers,
                     sess_options=sess_options
                 )
