@@ -338,9 +338,10 @@ class LivePortraitONNX:
     
     def is_ready(self) -> bool:
         """Check if the engine is ready for animation"""
-        return (self.appearance_session is not None and 
-                self.motion_session is not None and 
-                self.reference_appearance is not None)
+    return (self.appearance_session is not None and 
+        self.motion_session is not None and 
+        self.generator_session is not None and 
+        self.reference_appearance is not None)
 
 
 # Global instance

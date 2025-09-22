@@ -63,9 +63,11 @@ RUN mkdir -p \
 ARG MIRAGE_DOWNLOAD_MODELS=1
 ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/appearance_feature_extractor.onnx"
 ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/motion_extractor.onnx"
+ARG MIRAGE_LP_GENERATOR_URL=""
 ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
     MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
-    MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL}
+    MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL} \
+    MIRAGE_LP_GENERATOR_URL=${MIRAGE_LP_GENERATOR_URL}
 # Skip model download during build - only download at runtime if needed
 # RUN python3 /app/model_downloader.py || true
 
@@ -85,7 +87,8 @@ ENV HOME=/app \
 # Enable SCRFD and LivePortrait safe path by default for testing; try landmark reenactor if MediaPipe available.
 ENV MIRAGE_ENABLE_SCRFD=1 \
     MIRAGE_ENABLE_LIVEPORTRAIT=1 \
-    MIRAGE_ENABLE_LANDMARK_REENACTOR=auto
+    MIRAGE_ENABLE_LANDMARK_REENACTOR=auto \
+    MIRAGE_REQUIRE_NEURAL=0
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
