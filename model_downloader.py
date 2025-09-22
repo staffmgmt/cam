@@ -132,8 +132,15 @@ def maybe_download() -> bool:
     
     # Download additional models (generator required in neural-only mode)
     generator_url = os.getenv('MIRAGE_LP_GENERATOR_URL')
+    force_gen = os.getenv('MIRAGE_FORCE_DOWNLOAD_GENERATOR', '0').lower() in ('1','true','yes','on')
     if generator_url:
         dest = LP_DIR / 'generator.onnx'
+        if force_gen and dest.exists():
+            try:
+                dest.unlink()
+                print(f"[downloader] Forcing re-download of generator: removed existing {dest}")
+            except Exception as e:
+                print(f"[downloader] Could not remove existing generator for force download: {e}")
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading generator model...')

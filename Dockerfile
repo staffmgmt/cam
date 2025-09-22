@@ -67,17 +67,16 @@ RUN mkdir -p \
 ARG MIRAGE_DOWNLOAD_MODELS=1
 ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/appearance_feature_extractor.onnx"
 ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/motion_extractor.onnx"
-# Prefer the 'warping_spade-fix.onnx' generator which avoids common inference issues
-ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/warping_spade-fix.onnx"
-# Custom ops plugin for GridSample 3D (optional; used by some generator variants)
-ARG MIRAGE_LP_GRID_PLUGIN_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/libgrid_sample_3d_plugin.so"
+# Use the standard generator that doesn't require custom GridSample3D ops
+ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/warping_spade.onnx"
+# Optional custom ops plugin is disabled by default (TensorRT not present in this image)
+# ARG MIRAGE_LP_GRID_PLUGIN_URL=""
 ARG MIRAGE_LP_STITCHING_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/stitching.onnx"
 ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
     MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
     MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL} \
     MIRAGE_LP_GENERATOR_URL=${MIRAGE_LP_GENERATOR_URL} \
-    MIRAGE_LP_STITCHING_URL=${MIRAGE_LP_STITCHING_URL} \
-    MIRAGE_LP_GRID_PLUGIN_URL=${MIRAGE_LP_GRID_PLUGIN_URL}
+    MIRAGE_LP_STITCHING_URL=${MIRAGE_LP_STITCHING_URL}
 # Skip model download during build - only download at runtime if needed
 # RUN python3 /app/model_downloader.py || true
 
@@ -93,7 +92,9 @@ ENV HOME=/app \
     HUGGINGFACE_HUB_CACHE=/app/.cache/huggingface/hub \
     TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers \
     INSIGHTFACE_HOME=/app/.insightface \
-    MPLCONFIGDIR=/tmp/matplotlib
+    MPLCONFIGDIR=/tmp/matplotlib \
+    MIRAGE_ORT_DISABLE_SHAPE_INFERENCE=1 \
+    MIRAGE_FORCE_DOWNLOAD_GENERATOR=1
 
 # Enforce single neural path (SCRFD + LivePortrait generator)
 ENV MIRAGE_REQUIRE_NEURAL=1
