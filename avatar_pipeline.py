@@ -400,7 +400,7 @@ class RealTimeAvatarPipeline:
         """Initialize all models"""
         logger.info("Initializing real-time avatar pipeline...")
         
-        # Initialize SCRFD face detection
+        # Initialize SCRFD face detection (non-fatal if fails; we'll use landmark fallback)
         scrfd_ok = await self.scrfd_detector.load_model()
         if scrfd_ok:
             logger.info("SCRFD face detection ready")
@@ -423,7 +423,7 @@ class RealTimeAvatarPipeline:
             logger.warning("LivePortrait engine not available - using landmark reenactor")
             self.use_liveportrait = False
         
-        # Initialize legacy components if needed
+        # Initialize legacy components if needed (kept for compatibility)
         loop = asyncio.get_running_loop()
         try:
             fd_ok = await loop.run_in_executor(None, self.face_detector.load_model)
@@ -464,11 +464,18 @@ class RealTimeAvatarPipeline:
                 
             logger.info(f"Model loading results: FD={fd_ok}, LP={lp_ok}, RVC={rvc_ok}, SCRFD_safe={scrfd_safe_ok}, LP_safe={lp_safe_ok}")
             
-            # Mark as loaded if at least face detection works
-            self.loaded = scrfd_ok or fd_ok
+            # Mark as loaded if at least one mechanism is available:
+            # - SCRFD face detection (preferred)
+            # - legacy face detector
+            # - landmark reenactor fallback (no heavy models)
+            self.loaded = scrfd_ok or fd_ok or (self.landmark_reenactor is not None)
             
             if self.loaded:
-                logger.info("Avatar pipeline initialized successfully")
+                mode = (
+                    "liveportrait" if (self.use_liveportrait and self.liveportrait_ready and getattr(self.liveportrait_engine, 'generator_session', None) is not None)
+                    else ("landmark" if self.landmark_reenactor is not None else "simple_blend")
+                )
+                logger.info(f"Avatar pipeline initialized successfully (mode={mode})")
                 return True
             else:
                 logger.error("Avatar pipeline initialization failed - no face detection available")

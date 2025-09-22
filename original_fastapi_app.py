@@ -350,7 +350,7 @@ async def debug_models():
     lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
     files = {}
     try:
-        for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx"):
+        for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx", "generator.onnx"):
             p = lp_dir / name
             files[name] = {
                 "exists": p.exists(),
@@ -368,6 +368,7 @@ async def debug_models():
         "MIRAGE_ENABLE_SCRFD": os.getenv("MIRAGE_ENABLE_SCRFD"),
         "MIRAGE_ENABLE_LIVEPORTRAIT": os.getenv("MIRAGE_ENABLE_LIVEPORTRAIT"),
         "MIRAGE_DOWNLOAD_MODELS": os.getenv("MIRAGE_DOWNLOAD_MODELS"),
+        "MIRAGE_ENABLE_LANDMARK_REENACTOR": os.getenv("MIRAGE_ENABLE_LANDMARK_REENACTOR"),
     }
     return {
         "files": files,

@@ -3,7 +3,8 @@ Optional model downloader for deterministic builds.
 - Controlled with env MIRAGE_DOWNLOAD_MODELS=1
 - LivePortrait ONNX URLs controlled via env:
     * MIRAGE_LP_APPEARANCE_URL
-    * MIRAGE_LP_MOTION_URL (optional)
+    * MIRAGE_LP_MOTION_URL (required for motion)
+    * MIRAGE_LP_GENERATOR_URL (optional; enables full neural synthesis)
 - InsightFace models will still use the package cache; SCRFD will populate on first run.
 
 More robust with retries and alternative download methods (requests, huggingface_hub).
