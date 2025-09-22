@@ -156,6 +156,18 @@ def maybe_download() -> bool:
             except Exception as e:
                 print(f'[downloader] ⚠️ Failed to download stitching (optional): {e}')
     
+    # Optional custom ops plugin for GridSample 3D used by some generator variants
+    grid_plugin_url = os.getenv('MIRAGE_LP_GRID_PLUGIN_URL')
+    if grid_plugin_url:
+        dest = LP_DIR / 'libgrid_sample_3d_plugin.so'
+        if not dest.exists():
+            try:
+                print(f'[downloader] Downloading grid sample plugin...')
+                _download(grid_plugin_url, dest)
+                print(f'[downloader] ✅ Downloaded: {dest}')
+            except Exception as e:
+                print(f'[downloader] ⚠️ Failed to download grid plugin (optional): {e}')
+    
     return success
 
 

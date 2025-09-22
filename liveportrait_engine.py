@@ -7,6 +7,7 @@ import numpy as np
 import cv2
 import torch
 import onnxruntime as ort
+import os
 from typing import Optional, Tuple, Dict, Any
 from pathlib import Path
 import logging
@@ -61,11 +62,24 @@ class LivePortraitONNX:
             providers.append("CUDAExecutionProvider")
         providers.append("CPUExecutionProvider")
         return providers
+
+    def _register_custom_ops(self):
+        """Register optional custom ops library if present."""
+        try:
+            lib_path = self.models_dir / "libgrid_sample_3d_plugin.so"
+            if lib_path.exists():
+                logger.info(f"Registering custom ops library: {lib_path}")
+                # onnxruntime automatically loads custom opsets when passed via session options - set env var as a fallback
+                os.environ["ORT_LOAD_CUSTOM_OP_LIBS"] = str(lib_path)
+        except Exception as e:
+            logger.warning(f"Failed to register custom ops library: {e}")
     
     def load_models(self) -> bool:
         """Load all available ONNX models"""
         try:
             providers = self._get_onnx_providers()
+            # Optionally register custom ops shared library
+            self._register_custom_ops()
             
             # Set session options for performance
             sess_options = ort.SessionOptions()
@@ -73,6 +87,21 @@ class LivePortraitONNX:
             sess_options.enable_cpu_mem_arena = True
             sess_options.enable_mem_pattern = True
             sess_options.enable_mem_reuse = True
+            # Register custom ops library directly if present
+            try:
+                lib_path = self.models_dir / "libgrid_sample_3d_plugin.so"
+                if lib_path.exists():
+                    sess_options.register_custom_ops_library(str(lib_path))
+                    logger.info("Custom ops library registered via SessionOptions")
+            except Exception as e:
+                logger.warning(f"Failed to register custom ops via SessionOptions: {e}")
+            # Allow disabling shape inference if environment indicates issues
+            if os.getenv("MIRAGE_ORT_DISABLE_SHAPE_INFERENCE", "0") in ("1", "true", "True"):
+                try:
+                    sess_options.add_session_config_entry("session.disable_shape_inference", "1")
+                    logger.info("ONNX Runtime: shape inference disabled via session config entry")
+                except Exception:
+                    pass
             
             # Load appearance feature extractor (required)
             if self.appearance_model_path.exists():
@@ -146,10 +175,15 @@ class LivePortraitONNX:
                 except Exception as e:
                     logger.warning(f"Generator failed with tuned providers, retrying basic: {e}")
                     basic_providers = [p for p in providers]
-                    self.generator_session = ort.InferenceSession(
-                        str(gen_path),
-                        providers=basic_providers
-                    )
+                    # Try again with minimal options
+                    try:
+                        self.generator_session = ort.InferenceSession(
+                            str(gen_path),
+                            providers=basic_providers
+                        )
+                    except Exception as e2:
+                        logger.error(f"Generator failed to load with basic providers as well: {e2}")
+                        raise
             else:
                 logger.info("Generator model not available - using motion-based warping")
             

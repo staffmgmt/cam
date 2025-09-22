@@ -67,15 +67,17 @@ RUN mkdir -p \
 ARG MIRAGE_DOWNLOAD_MODELS=1
 ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/appearance_feature_extractor.onnx"
 ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/motion_extractor.onnx"
-# Generator file in FasterLivePortrait repo is named 'warping_spade.onnx'
-# Download it and save locally as models/liveportrait/generator.onnx
-ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/warping_spade.onnx"
+# Prefer the 'warping_spade-fix.onnx' generator which avoids common inference issues
+ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/warping_spade-fix.onnx"
+# Custom ops plugin for GridSample 3D (optional; used by some generator variants)
+ARG MIRAGE_LP_GRID_PLUGIN_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/libgrid_sample_3d_plugin.so"
 ARG MIRAGE_LP_STITCHING_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/stitching.onnx"
 ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
     MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
     MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL} \
     MIRAGE_LP_GENERATOR_URL=${MIRAGE_LP_GENERATOR_URL} \
-    MIRAGE_LP_STITCHING_URL=${MIRAGE_LP_STITCHING_URL}
+    MIRAGE_LP_STITCHING_URL=${MIRAGE_LP_STITCHING_URL} \
+    MIRAGE_LP_GRID_PLUGIN_URL=${MIRAGE_LP_GRID_PLUGIN_URL}
 # Skip model download during build - only download at runtime if needed
 # RUN python3 /app/model_downloader.py || true
 
