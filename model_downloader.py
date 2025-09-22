@@ -18,9 +18,14 @@ import time
 from typing import Optional
 
 try:
-        import requests  # type: ignore
+    import requests  # type: ignore
 except Exception:
-        requests = None
+    requests = None
+
+try:
+    import onnx  # type: ignore
+except Exception:
+    onnx = None
 
 try:
         from huggingface_hub import hf_hub_download  # type: ignore
@@ -75,6 +80,17 @@ def _download_hf(url: str, dest: Path) -> bool:
     except Exception as e:
         print(f"[downloader] hf_hub_download error: {e}")
     return False
+
+def _is_valid_onnx(path: Path) -> bool:
+    try:
+        if not path.exists() or path.stat().st_size < 262144:  # 256KB minimum sanity size
+            return False
+        if onnx is None:
+            return True
+        onnx.load(str(path), load_external_data=True)
+        return True
+    except Exception:
+        return False
 
 def _download(url: str, dest: Path):
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -145,12 +161,49 @@ def maybe_download() -> bool:
             try:
                 print(f'[downloader] Downloading generator model...')
                 _download(generator_url, dest)
+                # Validate ONNX
+                if not _is_valid_onnx(dest):
+                    print(f"[downloader] ❌ Generator ONNX validation failed, retrying with alternate URLs if provided")
+                    try:
+                        dest.unlink()
+                    except Exception:
+                        pass
+                    alt_urls = [u.strip() for u in os.getenv('MIRAGE_LP_GENERATOR_ALT_URLS', '').split(',') if u.strip()]
+                    success_alt = False
+                    for u in alt_urls:
+                        try:
+                            print(f'[downloader] Trying alternate generator URL: {u}')
+                            _download(u, dest)
+                            if _is_valid_onnx(dest):
+                                success_alt = True
+                                break
+                        except Exception as e2:
+                            print(f'[downloader] Alternate URL failed: {e2}')
+                    if not success_alt:
+                        raise RuntimeError('generator download invalid from all sources')
                 print(f'[downloader] ✅ Downloaded: {dest}')
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download generator (required): {e}')
                 success = False
         else:
-            print(f'[downloader] ✅ Generator already exists: {dest}')
+            # Validate existing file
+            if not _is_valid_onnx(dest):
+                try:
+                    print(f"[downloader] Existing generator is invalid, removing and retrying download")
+                    dest.unlink()
+                except Exception:
+                    pass
+                try:
+                    print(f'[downloader] Downloading generator model...')
+                    _download(generator_url, dest)
+                    if not _is_valid_onnx(dest):
+                        raise RuntimeError('generator invalid after re-download')
+                    print(f'[downloader] ✅ Downloaded: {dest}')
+                except Exception as e2:
+                    print(f'[downloader] ❌ Failed to refresh invalid generator: {e2}')
+                    success = False
+            else:
+                print(f'[downloader] ✅ Generator already exists: {dest}')
     # Optional stitching model
     stitching_url = os.getenv('MIRAGE_LP_STITCHING_URL')
     if stitching_url:

@@ -15,6 +15,14 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# Try to import onnxruntime-extensions to register extra custom ops (e.g., GridSample)
+_ORTEXT_LIB = None
+try:
+    from onnxruntime_extensions import get_library_path as _ortext_get_library_path  # type: ignore
+    _ORTEXT_LIB = _ortext_get_library_path()
+except Exception:
+    _ORTEXT_LIB = None
+
 class LivePortraitONNX:
     """
     Complete LivePortrait ONNX pipeline for neural face animation
@@ -93,6 +101,10 @@ class LivePortraitONNX:
                 if lib_path.exists():
                     sess_options.register_custom_ops_library(str(lib_path))
                     logger.info("Custom ops library registered via SessionOptions")
+                # Prefer onnxruntime-extensions custom ops if available
+                if _ORTEXT_LIB:
+                    sess_options.register_custom_ops_library(_ORTEXT_LIB)
+                    logger.info("onnxruntime-extensions custom ops registered")
             except Exception as e:
                 logger.warning(f"Failed to register custom ops via SessionOptions: {e}")
             # Allow disabling shape inference if environment indicates issues
@@ -177,9 +189,22 @@ class LivePortraitONNX:
                     basic_providers = [p for p in providers]
                     # Try again with minimal options
                     try:
+                        # Register extensions on a fresh SessionOptions too
+                        sess_basic = ort.SessionOptions()
+                        try:
+                            if _ORTEXT_LIB:
+                                sess_basic.register_custom_ops_library(_ORTEXT_LIB)
+                        except Exception:
+                            pass
+                        if os.getenv("MIRAGE_ORT_DISABLE_SHAPE_INFERENCE", "0") in ("1", "true", "True"):
+                            try:
+                                sess_basic.add_session_config_entry("session.disable_shape_inference", "1")
+                            except Exception:
+                                pass
                         self.generator_session = ort.InferenceSession(
                             str(gen_path),
-                            providers=basic_providers
+                            providers=basic_providers,
+                            sess_options=sess_basic
                         )
                     except Exception as e2:
                         logger.error(f"Generator failed to load with basic providers as well: {e2}")

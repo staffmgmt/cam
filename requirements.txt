@@ -13,6 +13,7 @@ transformers==4.44.2
 onnx==1.16.1
 # ORT GPU pinned to a CUDA 11.x-friendly, PyPI-available build
 onnxruntime-gpu==1.16.3
+onnxruntime-extensions==0.11.0
 huggingface-hub==0.24.5
 python-multipart==0.0.9
 av==11.0.0
