@@ -330,8 +330,8 @@ class RealTimeAvatarPipeline:
         # Voice conversion disabled in this build
         self.rvc = RVCVoiceConverter(self.config)
         
-    # Safe model loader (optional, not required in neural-only path)
-    self.safe_loader = get_safe_model_loader() if get_safe_model_loader else None
+        # Safe model loader (optional, not required in neural-only path)
+        self.safe_loader = get_safe_model_loader() if get_safe_model_loader else None
         
         # No landmark reenactor or other fallbacks in neural-only mode
         self.landmark_reenactor = None
@@ -356,7 +356,7 @@ class RealTimeAvatarPipeline:
         # Performance tracking
         self.frame_times = deque(maxlen=100)
         self.audio_times = deque(maxlen=100)
-    self._metrics = get_enhanced_metrics() if get_enhanced_metrics else None
+        self._metrics = get_enhanced_metrics() if get_enhanced_metrics else None
         
         # Processing locks
         self.video_lock = threading.Lock()
