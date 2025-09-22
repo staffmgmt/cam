@@ -114,6 +114,17 @@ async def initialize_pipeline():
                 stats = pipeline.get_performance_stats()
             except Exception:
                 stats = {}
+            # Also include model file presence for quick diagnosis
+            try:
+                from pathlib import Path as _Path
+                lp_dir = _Path(__file__).parent / 'models' / 'liveportrait'
+                files = {}
+                for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx", "generator.onnx", "stitching.onnx"):
+                    p = lp_dir / name
+                    files[name] = {"exists": p.exists(), "size_bytes": p.stat().st_size if p.exists() else 0}
+                stats["model_files"] = files
+            except Exception:
+                pass
             return {"status": "error", "message": "Failed to initialize pipeline", "details": stats}
     except Exception as e:
         return {"status": "error", "message": f"Initialization error: {str(e)}"}

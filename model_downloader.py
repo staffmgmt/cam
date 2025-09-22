@@ -130,7 +130,7 @@ def maybe_download() -> bool:
         else:
             print(f'[downloader] ✅ Motion extractor already exists: {dest}')
     
-    # Download additional models if URLs provided
+    # Download additional models (generator required in neural-only mode)
     generator_url = os.getenv('MIRAGE_LP_GENERATOR_URL')
     if generator_url:
         dest = LP_DIR / 'generator.onnx'
@@ -140,8 +140,10 @@ def maybe_download() -> bool:
                 _download(generator_url, dest)
                 print(f'[downloader] ✅ Downloaded: {dest}')
             except Exception as e:
-                print(f'[downloader] ⚠️ Failed to download generator (optional): {e}')
-                # Don't mark as failure since generator is optional
+                print(f'[downloader] ❌ Failed to download generator (required): {e}')
+                success = False
+        else:
+            print(f'[downloader] ✅ Generator already exists: {dest}')
     # Optional stitching model
     stitching_url = os.getenv('MIRAGE_LP_STITCHING_URL')
     if stitching_url:
