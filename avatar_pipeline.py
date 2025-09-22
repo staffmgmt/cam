@@ -440,6 +440,15 @@ class RealTimeAvatarPipeline:
             self.loaded = bool(self.use_liveportrait and self.liveportrait_ready and getattr(self.liveportrait_engine, 'generator_session', None) is not None)
             
             if self.loaded:
+                # If a reference was queued before init, try to extract appearance now
+                try:
+                    if self.reference_frame is not None and self.reference_appearance_features is None:
+                        af = self.liveportrait_engine.extract_appearance_features(self.reference_frame)
+                        if af is not None:
+                            self.reference_appearance_features = af
+                            logger.info("Post-init appearance features extracted from queued reference")
+                except Exception as e:
+                    logger.warning(f"Post-init reference extraction failed: {e}")
                 mode = "liveportrait"
                 logger.info(f"Avatar pipeline initialized successfully (mode={mode})")
                 return True
@@ -497,6 +506,10 @@ class RealTimeAvatarPipeline:
             # Check if we have a reference
             if self.reference_frame is None:
                 logger.error("No reference set")
+                try:
+                    self.last_method = 'no_reference'
+                except Exception:
+                    pass
                 return frame
             
             # LivePortrait neural animation (only path)
