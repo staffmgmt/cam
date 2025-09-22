@@ -484,6 +484,12 @@ class RealTimeAvatarPipeline:
             logger.info(f"Setting reference frame: {frame.shape}")
             # Detect face in reference frame using SCRFD (required)
             faces = self.scrfd_detector.detect_faces(frame)
+            # If no faces, try rotating the image (common EXIF-rotated portrait photos)
+            rotations = 0
+            while (not faces) and rotations < 3:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                rotations += 1
+                faces = self.scrfd_detector.detect_faces(frame)
             if not faces:
                 logger.error("No face detected in reference image")
                 return False

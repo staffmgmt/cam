@@ -1,6 +1,6 @@
 ## Docker runtime for Hugging Face GPU Space (A10G) in Docker mode
-## Single-stage image on Ubuntu 22.04 (Python 3.10) with CUDA 12.1 + cuDNN 8
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+## Single-stage image on Ubuntu 22.04 (Python 3.10) with CUDA 11.8 + cuDNN 8
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -29,25 +29,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     libsndfile1 \
-    # CUDA runtime libs for ORT CUDA provider
-    cuda-cudart-12-1 \
-    cuda-cupti-12-1 \
-    libcublas-12-1 \
-    libcublaslt-12-1 \
-    libcufft-12-1 \
-    libcurand-12-1 \
-    libcusolver-12-1 \
-    libcusparse-12-1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install PyTorch with CUDA 12.1 first to avoid resolver overriding
+# Install PyTorch with CUDA 11.8 first to avoid resolver overriding
 RUN pip3 install --no-cache-dir --upgrade pip wheel setuptools \
  && pip3 install --no-cache-dir \
-    torch==2.3.1+cu121 \
-    torchaudio==2.3.1+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121
+    torch==2.2.2+cu118 \
+    torchvision==0.17.2+cu118 \
+    torchaudio==2.2.2+cu118 \
+    --index-url https://download.pytorch.org/whl/cu118
 
 # Copy requirements and install remaining Python dependencies
 COPY requirements.txt ./
