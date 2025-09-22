@@ -56,14 +56,18 @@ RUN mkdir -p \
         /app/checkpoints \
         /app/.cache/huggingface/hub \
         /app/.cache/huggingface/transformers \
+        /app/.cache/insightface \
+        /app/.insightface \
+        /tmp/matplotlib \
         /tmp/cuda_cache \
-    && chmod -R 777 /app/models /app/checkpoints /app/.cache /tmp/cuda_cache
+    && chmod -R 777 /app/models /app/checkpoints /app/.cache /app/.insightface /tmp/cuda_cache /tmp/matplotlib
 
 # Optional model downloader configuration (example URLs)
 ARG MIRAGE_DOWNLOAD_MODELS=1
 ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/appearance_feature_extractor.onnx"
 ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/motion_extractor.onnx"
-ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/generator.onnx"
+# Generator path under FasterLivePortrait may vary; use top-level path fallback
+ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/generator.onnx"
 ARG MIRAGE_LP_STITCHING_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/stitching.onnx"
 ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
     MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
@@ -83,7 +87,9 @@ ENV PORT=7860
 ENV HOME=/app \
     HF_HOME=/app/.cache/huggingface \
     HUGGINGFACE_HUB_CACHE=/app/.cache/huggingface/hub \
-    TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers
+    TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers \
+    INSIGHTFACE_HOME=/app/.insightface \
+    MPLCONFIGDIR=/tmp/matplotlib
 
 # Enforce single neural path (SCRFD + LivePortrait generator)
 ENV MIRAGE_REQUIRE_NEURAL=1
