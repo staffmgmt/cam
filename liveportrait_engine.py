@@ -674,8 +674,13 @@ class LivePortraitONNX:
             
             # Run inference
             start_time = time.time()
+            logger.info("Starting generator inference...")
             outputs = self.generator_session.run(None, feed_dict)
             inference_time = time.time() - start_time
+            logger.info(f"Generator inference completed in {inference_time*1000:.1f}ms")
+            
+            # Log output info
+            logger.info(f"Generator outputs: {len(outputs)} tensors, first shape: {outputs[0].shape if outputs else 'None'}")
             
             # Post-process output
             generated_image = outputs[0]  # Assume first output is generated image
@@ -690,6 +695,7 @@ class LivePortraitONNX:
             # Convert RGB to BGR for OpenCV
             generated_image = cv2.cvtColor(generated_image, cv2.COLOR_RGB2BGR)
             
+            logger.info(f"Generated frame processed, final shape: {generated_image.shape}, dtype: {generated_image.dtype}")
             return generated_image
             
         except Exception as e:
