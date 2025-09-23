@@ -26,6 +26,11 @@ try:
     import onnx  # type: ignore
 except Exception:
     onnx = None
+try:
+    # Optional: version converter for opset downgrade
+    from onnx import version_converter  # type: ignore
+except Exception:
+    version_converter = None  # type: ignore
 
 try:
         from huggingface_hub import hf_hub_download  # type: ignore
@@ -92,6 +97,25 @@ def _is_valid_onnx(path: Path) -> bool:
     except Exception:
         return False
 
+def _maybe_convert_opset_to_19(path: Path) -> Path:
+    """If ONNX opset > 19, attempt to convert to opset 19 for ORT 1.16.3 compatibility.
+    Returns the path to a converted file (sibling with _op19 suffix) or the original path on failure/no-op.
+    """
+    if onnx is None or version_converter is None or path.suffix != ".onnx":
+        return path
+    try:
+        model = onnx.load(str(path), load_external_data=True)
+        max_opset = max((imp.version for imp in model.opset_import), default=0)
+        if max_opset and max_opset > 19:
+            print(f"[downloader] Downgrading opset from {max_opset} to 19 for {path.name}")
+            converted = version_converter.convert_version(model, 19)
+            out_path = path.with_name(path.stem + "_op19.onnx")
+            onnx.save(converted, str(out_path))
+            return out_path
+    except Exception as e:
+        print(f"[downloader] Opset conversion skipped for {path.name}: {e}")
+    return path
+
 def _download(url: str, dest: Path):
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -116,34 +140,79 @@ def maybe_download() -> bool:
     
     app_url = os.getenv('MIRAGE_LP_APPEARANCE_URL')
     motion_url = os.getenv('MIRAGE_LP_MOTION_URL')
+    force_app = os.getenv('MIRAGE_FORCE_DOWNLOAD_APPEARANCE', '0').lower() in ('1','true','yes','on')
+    force_mot = os.getenv('MIRAGE_FORCE_DOWNLOAD_MOTION', '0').lower() in ('1','true','yes','on')
     success = True
     
     # Download LivePortrait appearance extractor
     if app_url:
         dest = LP_DIR / 'appearance_feature_extractor.onnx'
+        if force_app and dest.exists():
+            try:
+                dest.unlink()
+                print(f"[downloader] Forcing re-download of appearance: removed existing {dest}")
+            except Exception as e:
+                print(f"[downloader] Could not remove existing appearance for force download: {e}")
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading appearance extractor...')
                 _download(app_url, dest)
+                # Optionally convert opset for compatibility
+                converted = _maybe_convert_opset_to_19(dest)
+                if converted != dest:
+                    # Prefer converted model by replacing original
+                    try:
+                        shutil.copyfile(converted, dest)
+                        print(f"[downloader] Replaced appearance with opset19: {converted.name}")
+                    except Exception:
+                        pass
                 print(f'[downloader] ✅ Downloaded: {dest}')
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download appearance extractor: {e}')
                 success = False
         else:
+            # Ensure compatibility if a cached file is opset>19
+            converted = _maybe_convert_opset_to_19(dest)
+            if converted != dest:
+                try:
+                    shutil.copyfile(converted, dest)
+                    print(f"[downloader] Updated cached appearance to opset19")
+                except Exception:
+                    pass
             print(f'[downloader] ✅ Appearance extractor already exists: {dest}')
     
     # Download LivePortrait motion extractor
     if motion_url:
         dest = LP_DIR / 'motion_extractor.onnx'
+        if force_mot and dest.exists():
+            try:
+                dest.unlink()
+                print(f"[downloader] Forcing re-download of motion: removed existing {dest}")
+            except Exception as e:
+                print(f"[downloader] Could not remove existing motion for force download: {e}")
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading motion extractor...')
                 _download(motion_url, dest)
+                converted = _maybe_convert_opset_to_19(dest)
+                if converted != dest:
+                    try:
+                        shutil.copyfile(converted, dest)
+                        print(f"[downloader] Replaced motion with opset19: {converted.name}")
+                    except Exception:
+                        pass
                 print(f'[downloader] ✅ Downloaded: {dest}')
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download motion extractor: {e}')
                 success = False
         else:
+            converted = _maybe_convert_opset_to_19(dest)
+            if converted != dest:
+                try:
+                    shutil.copyfile(converted, dest)
+                    print(f"[downloader] Updated cached motion to opset19")
+                except Exception:
+                    pass
             print(f'[downloader] ✅ Motion extractor already exists: {dest}')
     
     # Download additional models (generator required in neural-only mode)

@@ -8,6 +8,8 @@ import cv2
 import torch
 import onnxruntime as ort
 import os
+import onnx  # type: ignore
+from onnx import version_converter  # type: ignore
 from typing import Optional, Tuple, Dict, Any
 from pathlib import Path
 import logging
@@ -110,12 +112,28 @@ class LivePortraitONNX:
                 except Exception:
                     pass
             
+            # Helper to ensure opset <= 19 by converting if required
+            def _ensure_opset_compat(path: Path) -> Path:
+                try:
+                    model = onnx.load(str(path), load_external_data=True)
+                    max_opset = max((imp.version for imp in model.opset_import), default=0)
+                    if max_opset > 19:
+                        logger.info(f"Converting ONNX opset from {max_opset} to 19 for {path.name}")
+                        converted = version_converter.convert_version(model, 19)
+                        out_path = path.with_name(path.stem + "_op19.onnx")
+                        onnx.save(converted, str(out_path))
+                        return out_path
+                except Exception as ce:
+                    logger.warning(f"Opset conversion skipped for {path.name}: {ce}")
+                return path
+
             # Load appearance feature extractor (required)
             if self.appearance_model_path.exists():
-                logger.info(f"Loading appearance model: {self.appearance_model_path}")
+                app_path = _ensure_opset_compat(self.appearance_model_path)
+                logger.info(f"Loading appearance model: {app_path}")
                 try:
                     self.appearance_session = ort.InferenceSession(
-                        str(self.appearance_model_path), 
+                        str(app_path), 
                         providers=providers,
                         sess_options=sess_options
                     )
@@ -124,7 +142,7 @@ class LivePortraitONNX:
                     # Retry with default provider list only
                     basic_providers = [p for p in providers]
                     self.appearance_session = ort.InferenceSession(
-                        str(self.appearance_model_path),
+                        str(app_path),
                         providers=basic_providers
                     )
             else:
@@ -133,10 +151,11 @@ class LivePortraitONNX:
             
             # Load motion extractor (required)
             if self.motion_model_path.exists():
-                logger.info(f"Loading motion model: {self.motion_model_path}")
+                mot_path = _ensure_opset_compat(self.motion_model_path)
+                logger.info(f"Loading motion model: {mot_path}")
                 try:
                     self.motion_session = ort.InferenceSession(
-                        str(self.motion_model_path),
+                        str(mot_path),
                         providers=providers,
                         sess_options=sess_options
                     )
@@ -144,7 +163,7 @@ class LivePortraitONNX:
                     logger.warning(f"Motion model failed with tuned providers, retrying basic: {e}")
                     basic_providers = [p for p in providers]
                     self.motion_session = ort.InferenceSession(
-                        str(self.motion_model_path),
+                        str(mot_path),
                         providers=basic_providers
                     )
             else:
