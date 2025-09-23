@@ -36,6 +36,7 @@ class LivePortraitONNX:
                  device: str = "cuda"):
         
         self.models_dir = Path(models_dir)
+        # Default desired size (width, height); will be overridden by model's required size if present
         self.target_size = target_size
         self.device = device
         
@@ -49,6 +50,10 @@ class LivePortraitONNX:
         self.appearance_session: Optional[ort.InferenceSession] = None
         self.motion_session: Optional[ort.InferenceSession] = None
         self.generator_session: Optional[ort.InferenceSession] = None
+
+        # Model-specific input sizes (width, height), inferred from ONNX model inputs when loaded
+        self.appearance_input_size: Optional[Tuple[int, int]] = None
+        self.motion_input_size: Optional[Tuple[int, int]] = None
         
         # Cached appearance features
         self.reference_appearance: Optional[np.ndarray] = None
@@ -145,6 +150,18 @@ class LivePortraitONNX:
                         str(app_path),
                         providers=basic_providers
                     )
+                # Infer expected input size (assume NCHW: [N, C, H, W])
+                try:
+                    a_in = self.appearance_session.get_inputs()[0]
+                    shape = a_in.shape
+                    if isinstance(shape, (list, tuple)) and len(shape) == 4:
+                        h = shape[2]
+                        w = shape[3]
+                        if isinstance(h, int) and isinstance(w, int) and h > 0 and w > 0:
+                            self.appearance_input_size = (int(w), int(h))
+                            logger.info(f"Appearance model expects input (HxW): {h}x{w}")
+                except Exception as e:
+                    logger.warning(f"Unable to infer appearance input size: {e}")
             else:
                 logger.error(f"Appearance model not found: {self.appearance_model_path}")
                 return False
@@ -166,6 +183,18 @@ class LivePortraitONNX:
                         str(mot_path),
                         providers=basic_providers
                     )
+                # Infer expected input size for motion model
+                try:
+                    m_in = self.motion_session.get_inputs()[0]
+                    shape = m_in.shape
+                    if isinstance(shape, (list, tuple)) and len(shape) == 4:
+                        h = shape[2]
+                        w = shape[3]
+                        if isinstance(h, int) and isinstance(w, int) and h > 0 and w > 0:
+                            self.motion_input_size = (int(w), int(h))
+                            logger.info(f"Motion model expects input (HxW): {h}x{w}")
+                except Exception as e:
+                    logger.warning(f"Unable to infer motion input size: {e}")
             else:
                 logger.error(f"Motion model not found: {self.motion_model_path}")
                 return False
@@ -216,11 +245,15 @@ class LivePortraitONNX:
             logger.error(f"Failed to load LivePortrait models: {e}")
             return False
     
-    def _preprocess_image(self, image: np.ndarray) -> np.ndarray:
+    def _preprocess_image(self, image: np.ndarray, *, size: Optional[Tuple[int, int]] = None) -> np.ndarray:
         """Preprocess image for ONNX model input"""
-        # Resize to target size
-        if image.shape[:2] != self.target_size:
-            image = cv2.resize(image, self.target_size)
+        # Determine target (width, height)
+        target_wh = size or self.target_size
+        tw, th = target_wh
+        # Resize if needed; image.shape[:2] is (H, W)
+        h, w = image.shape[:2]
+        if (w, h) != (tw, th):
+            image = cv2.resize(image, (tw, th))
         
         # Convert BGR to RGB
         if len(image.shape) == 3 and image.shape[2] == 3:
@@ -243,7 +276,7 @@ class LivePortraitONNX:
         
         try:
             # Preprocess image
-            input_tensor = self._preprocess_image(reference_image)
+            input_tensor = self._preprocess_image(reference_image, size=self.appearance_input_size or self.target_size)
             
             # Get input name
             input_name = self.appearance_session.get_inputs()[0].name
@@ -273,7 +306,7 @@ class LivePortraitONNX:
         
         try:
             # Preprocess image
-            input_tensor = self._preprocess_image(driving_image)
+            input_tensor = self._preprocess_image(driving_image, size=self.motion_input_size or self.target_size)
             
             # Get input name
             input_name = self.motion_session.get_inputs()[0].name
