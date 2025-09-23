@@ -1,6 +1,6 @@
 ## Docker runtime for Hugging Face GPU Space (A10G) in Docker mode
 ## Single-stage image on Ubuntu 22.04 (Python 3.10) with CUDA 11.8 + cuDNN 8
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -33,13 +33,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install PyTorch with CUDA 12.1 first to avoid resolver overriding
+# Install PyTorch with CUDA 11.8 first to avoid resolver overriding
 RUN pip3 install --no-cache-dir --upgrade pip wheel setuptools \
  && pip3 install --no-cache-dir \
-    torch==2.3.1+cu121 \
-    torchvision==0.18.1+cu121 \
-    torchaudio==2.3.1+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121
+    torch==2.2.2+cu118 \
+    torchvision==0.17.2+cu118 \
+    torchaudio==2.2.2+cu118 \
+    --index-url https://download.pytorch.org/whl/cu118
 
 # Copy requirements and install remaining Python dependencies
 COPY requirements.txt ./
@@ -95,6 +95,7 @@ ENV HOME=/app \
     INSIGHTFACE_HOME=/app/.insightface \
     MPLCONFIGDIR=/tmp/matplotlib \
     MIRAGE_ORT_DISABLE_SHAPE_INFERENCE=1 \
+    MIRAGE_REQUIRE_GPU=1 \
     MIRAGE_FORCE_DOWNLOAD_GENERATOR=1 \
     MIRAGE_FORCE_DOWNLOAD_APPEARANCE=1 \
     MIRAGE_FORCE_DOWNLOAD_MOTION=1

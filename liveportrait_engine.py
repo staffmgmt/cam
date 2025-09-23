@@ -64,13 +64,20 @@ class LivePortraitONNX:
         self.inference_times = []
         
     def _get_onnx_providers(self) -> list[str]:
-        """Get optimal ONNX execution providers (with safe defaults)."""
+        """Get optimal ONNX execution providers. Enforce GPU if required."""
         avail = ort.get_available_providers()
         logger.info(f"ONNX Runtime available providers: {avail}")
-        providers: list = []
+        require_gpu = os.getenv("MIRAGE_REQUIRE_GPU", "0") in ("1", "true", "True")
+        providers: list[str] = []
         if self.device == "cuda" and "CUDAExecutionProvider" in avail:
-            # Start with a minimal, widely compatible config
             providers.append("CUDAExecutionProvider")
+        if require_gpu:
+            if "CUDAExecutionProvider" not in providers:
+                # Fail fast with explicit error to avoid CPU fallback
+                raise RuntimeError("GPU is required but CUDAExecutionProvider is unavailable. Check CUDA/cuDNN/ORT GPU alignment.")
+            # When GPU is required, do not append CPU provider to prevent silent fallback
+            return providers
+        # Otherwise allow CPU fallback
         providers.append("CPUExecutionProvider")
         return providers
 
