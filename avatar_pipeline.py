@@ -188,25 +188,7 @@ class LivePortraitModel:
     async def load_models(self):
         """Load LivePortrait models asynchronously"""
         try:
-            logger.info("Loading LivePortrait models...")
-            
-            # Import LivePortrait components
-            import sys
-            import os
-            
-            # Add LivePortrait to path (assuming it's in models/liveportrait)
-            liveportrait_path = Path(__file__).parent / "models" / "liveportrait"
-            if liveportrait_path.exists():
-                sys.path.append(str(liveportrait_path))
-            
-            # Download models if not present
-            await self._download_models()
-            
-            # Load the models with GPU optimization
-            device = self.config.device
-            
-            # Placeholder: Real LivePortrait loading not implemented here.
-            # Defer to safe_model_integration ONNX path instead.
+            # Skip native LivePortrait .pth model loading since we use ONNX-only path
             logger.info("LivePortrait (native) not implemented; using ONNX engine path")
             self.loaded = False
             return False

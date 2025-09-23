@@ -330,16 +330,22 @@ def _prefer_codec(sdp: str, kind: str, codec: str) -> str:
         return sdp
 
 
+# Pipeline initialization lock to prevent concurrent init attempts
+_init_lock = asyncio.Lock()
+
 async def _ensure_pipeline_initialized():
     """Initialize the pipeline if not already loaded."""
     pipeline = get_pipeline()
     try:
         if not getattr(pipeline, "loaded", False):
-            init = getattr(pipeline, "initialize", None)
-            if callable(init):
-                result = init()
-                if asyncio.iscoroutine(result):
-                    await result
+            async with _init_lock:
+                # Double-check after acquiring lock
+                if not getattr(pipeline, "loaded", False):
+                    init = getattr(pipeline, "initialize", None)
+                    if callable(init):
+                        result = init()
+                        if asyncio.iscoroutine(result):
+                            await result
     except Exception as e:
         logger.error(f"Pipeline init failed: {e}")
 
