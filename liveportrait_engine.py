@@ -411,36 +411,79 @@ class LivePortraitONNX:
                         return None
                 feed_dict[[n for n in input_names if n.lower() == kp_name][0]] = self.reference_kp
 
-            # Helper to normalize keypoint tensors (ensure [B, K, C])
+            # Helper to normalize keypoint tensors (ensure [B, K, C]) using generator meta
             def _normalize_kp(name: str, arr: np.ndarray) -> np.ndarray:
                 # Ensure dtype float32
                 if arr.dtype != np.float32:
                     arr = arr.astype(np.float32)
-                # Add batch dim if missing (rank 2 -> [1, K, C])
+
+                meta = next((m for m in inputs if m.name == name), None)
+                exp_b = None
+                exp_k = None
+                exp_c = None
+                if meta is not None and isinstance(meta.shape, (list, tuple)) and len(meta.shape) == 3:
+                    # meta.shape can contain None/symbolic for dynamic dims
+                    exp_b = meta.shape[0] if isinstance(meta.shape[0], int) else None
+                    exp_k = meta.shape[1] if isinstance(meta.shape[1], int) else None
+                    exp_c = meta.shape[2] if isinstance(meta.shape[2], int) else None
+
+                def _target_kc():
+                    # Prefer explicit expected dims; otherwise infer from common settings
+                    k = exp_k if isinstance(exp_k, int) and exp_k > 0 else None
+                    c = exp_c if isinstance(exp_c, int) and exp_c > 0 else None
+                    # Common defaults if unknown
+                    if c is None and k is not None:
+                        c = 3  # most models expect 3 coords
+                    if k is None and c is not None:
+                        # if only c known and arr size hints total N, derive k later
+                        pass
+                    return k, c
+
+                # Reduce extra dims
+                while arr.ndim > 3 and arr.shape[-1] == 1:
+                    arr = np.squeeze(arr, axis=-1)
+
+                # Expand dims to at least 2D
+                if arr.ndim == 1:
+                    arr = arr[None, :]  # [1, N]
+
+                k_hint, c_hint = _target_kc()
+
+                if arr.ndim == 2:
+                    # [B, N] or [N, C]
+                    B, N = (1, arr.shape[1]) if arr.shape[0] == 1 else (arr.shape[0], arr.shape[1])
+                    if c_hint in (2, 3) and N % c_hint == 0:
+                        K = N // (c_hint or 1)
+                        arr = arr.reshape((B, K, c_hint))
+                    elif k_hint is not None and c_hint is not None and N == k_hint * c_hint:
+                        arr = arr.reshape((1, k_hint, c_hint)) if B == 1 else arr.reshape((B, k_hint, c_hint))
+                    else:
+                        # Fallback: make last dim 1
+                        arr = arr.reshape((B, N, 1))
+
+                if arr.ndim == 3:
+                    B, K, C = arr.shape[0], arr.shape[1], arr.shape[2]
+                    # If exp dims known and product matches, reshape to match
+                    if k_hint is not None and c_hint is not None:
+                        if (K * C) == (k_hint * c_hint) and (K != k_hint or C != c_hint):
+                            arr = arr.reshape((B, k_hint, c_hint))
+                        else:
+                            # Adjust only last dim if necessary
+                            if c_hint in (2, 3) and C != c_hint:
+                                if C > c_hint:
+                                    arr = arr[..., :c_hint]
+                                else:
+                                    pad = np.zeros((B, K, c_hint - C), dtype=arr.dtype)
+                                    arr = np.concatenate([arr, pad], axis=-1)
+                            # If K differs and exp known but product doesn't match, try best-effort reshape
+                            if K != k_hint and k_hint is not None:
+                                total = K * C
+                                if c_hint in (2, 3) and total % c_hint == 0:
+                                    K2 = total // c_hint
+                                    arr = arr.reshape((B, K2, c_hint))
+                # Ensure batch dim present
                 if arr.ndim == 2:
                     arr = np.expand_dims(arr, 0)
-                # If rank > 3 and squeezable batch/channel dims, try to reduce to 3D conservatively
-                if arr.ndim > 3:
-                    # Common case: [B, K, C, 1] -> squeeze last
-                    if arr.shape[-1] == 1:
-                        arr = np.squeeze(arr, axis=-1)
-                # Optionally pad last dim from 2->3 if model expects 3
-                try:
-                    meta = next((m for m in inputs if m.name == name), None)
-                    if meta is not None and isinstance(meta.shape, (list, tuple)) and len(meta.shape) == 3:
-                        exp_last = meta.shape[2]
-                        if isinstance(exp_last, int) and exp_last in (2, 3):
-                            if arr.ndim == 3 and isinstance(arr.shape[-1], (int, np.integer)):
-                                cur_last = int(arr.shape[-1])
-                                if cur_last == 2 and exp_last == 3:
-                                    # Pad a zero z-dimension
-                                    pad = np.zeros((arr.shape[0], arr.shape[1], 1), dtype=arr.dtype)
-                                    arr = np.concatenate([arr, pad], axis=-1)
-                                # If cur_last==3 and exp_last==2, slice to first 2 dims
-                                elif cur_last == 3 and exp_last == 2:
-                                    arr = arr[..., :2]
-                except Exception:
-                    pass
                 return arr
 
             # Normalize kp_driving and kp_source shapes/dtypes
@@ -459,10 +502,12 @@ class LivePortraitONNX:
                 real = lower_to_real['source_kp']
                 feed_dict[real] = _normalize_kp(real, feed_dict[real])
 
-            # Log shapes for debugging
+            # Log shapes and expected meta for debugging
             try:
                 shapes = {k: list(v.shape) for k, v in feed_dict.items()}
+                meta = {i.name: [int(s) if isinstance(s, int) else (s if s is None else str(s)) for s in i.shape] for i in inputs}
                 logger.info(f"Generator feed shapes: {shapes}")
+                logger.info(f"Generator expected shapes: {meta}")
             except Exception:
                 pass
             
