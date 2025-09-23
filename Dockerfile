@@ -1,6 +1,6 @@
 ## Docker runtime for Hugging Face GPU Space (A10G) in Docker mode
 ## Single-stage image on Ubuntu 22.04 (Python 3.10) with CUDA 11.8 + cuDNN 8
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -33,13 +33,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install PyTorch with CUDA 11.8 first to avoid resolver overriding
+# Install PyTorch with CUDA 12.1 first to avoid resolver overriding
 RUN pip3 install --no-cache-dir --upgrade pip wheel setuptools \
  && pip3 install --no-cache-dir \
-    torch==2.2.2+cu118 \
-    torchvision==0.17.2+cu118 \
-    torchaudio==2.2.2+cu118 \
-    --index-url https://download.pytorch.org/whl/cu118
+    torch==2.3.1+cu121 \
+    torchvision==0.18.1+cu121 \
+    torchaudio==2.3.1+cu121 \
+    --index-url https://download.pytorch.org/whl/cu121
 
 # Copy requirements and install remaining Python dependencies
 COPY requirements.txt ./
@@ -67,9 +67,9 @@ RUN mkdir -p \
 ARG MIRAGE_DOWNLOAD_MODELS=1
 ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/appearance_feature_extractor.onnx"
 ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/motion_extractor.onnx"
-# Use FasterLivePortrait generator (warping_spade-fix.onnx) with opset≤19
-ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/warping_spade-fix.onnx"
-ARG MIRAGE_LP_GRID_PLUGIN_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/libgrid_sample_3d_plugin.so"
+# Use myn0908 generator with grid fix (opset 20); requires ORT >= 1.18
+ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/generator_fix_grid.onnx"
+# Do NOT set GRID_PLUGIN_URL to avoid TensorRT dependency in this image
 # Optional custom ops plugin is disabled by default (TensorRT not present in this image)
 # ARG MIRAGE_LP_GRID_PLUGIN_URL=""
 ARG MIRAGE_LP_STITCHING_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/stitching.onnx"
@@ -77,8 +77,7 @@ ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
     MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
     MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL} \
     MIRAGE_LP_GENERATOR_URL=${MIRAGE_LP_GENERATOR_URL} \
-    MIRAGE_LP_STITCHING_URL=${MIRAGE_LP_STITCHING_URL} \
-    MIRAGE_LP_GRID_PLUGIN_URL=${MIRAGE_LP_GRID_PLUGIN_URL}
+    MIRAGE_LP_STITCHING_URL=${MIRAGE_LP_STITCHING_URL}
 # Skip model download during build - only download at runtime if needed
 # RUN python3 /app/model_downloader.py || true
 
