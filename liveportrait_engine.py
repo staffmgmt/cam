@@ -396,6 +396,61 @@ class LivePortraitONNX:
                         logger.error("kp_source required but reference keypoints are unavailable")
                         return None
                 feed_dict[[n for n in input_names if n.lower() == kp_name][0]] = self.reference_kp
+
+            # Helper to normalize keypoint tensors (ensure [B, K, C])
+            def _normalize_kp(name: str, arr: np.ndarray) -> np.ndarray:
+                # Ensure dtype float32
+                if arr.dtype != np.float32:
+                    arr = arr.astype(np.float32)
+                # Add batch dim if missing (rank 2 -> [1, K, C])
+                if arr.ndim == 2:
+                    arr = np.expand_dims(arr, 0)
+                # If rank > 3 and squeezable batch/channel dims, try to reduce to 3D conservatively
+                if arr.ndim > 3:
+                    # Common case: [B, K, C, 1] -> squeeze last
+                    if arr.shape[-1] == 1:
+                        arr = np.squeeze(arr, axis=-1)
+                # Optionally pad last dim from 2->3 if model expects 3
+                try:
+                    meta = next((m for m in inputs if m.name == name), None)
+                    if meta is not None and isinstance(meta.shape, (list, tuple)) and len(meta.shape) == 3:
+                        exp_last = meta.shape[2]
+                        if isinstance(exp_last, int) and exp_last in (2, 3):
+                            if arr.ndim == 3 and isinstance(arr.shape[-1], (int, np.integer)):
+                                cur_last = int(arr.shape[-1])
+                                if cur_last == 2 and exp_last == 3:
+                                    # Pad a zero z-dimension
+                                    pad = np.zeros((arr.shape[0], arr.shape[1], 1), dtype=arr.dtype)
+                                    arr = np.concatenate([arr, pad], axis=-1)
+                                # If cur_last==3 and exp_last==2, slice to first 2 dims
+                                elif cur_last == 3 and exp_last == 2:
+                                    arr = arr[..., :2]
+                except Exception:
+                    pass
+                return arr
+
+            # Normalize kp_driving and kp_source shapes/dtypes
+            # Find real names (case-preserving) in feed
+            lower_to_real = {n.lower(): n for n in feed_dict.keys()}
+            if 'kp_driving' in lower_to_real:
+                real = lower_to_real['kp_driving']
+                feed_dict[real] = _normalize_kp(real, feed_dict[real])
+            if 'driving' in lower_to_real:
+                real = lower_to_real['driving']
+                feed_dict[real] = _normalize_kp(real, feed_dict[real])
+            if 'kp_source' in lower_to_real:
+                real = lower_to_real['kp_source']
+                feed_dict[real] = _normalize_kp(real, feed_dict[real])
+            if 'source_kp' in lower_to_real:
+                real = lower_to_real['source_kp']
+                feed_dict[real] = _normalize_kp(real, feed_dict[real])
+
+            # Log shapes for debugging
+            try:
+                shapes = {k: list(v.shape) for k, v in feed_dict.items()}
+                logger.info(f"Generator feed shapes: {shapes}")
+            except Exception:
+                pass
             
             # Run inference
             start_time = time.time()
