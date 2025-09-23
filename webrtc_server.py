@@ -397,13 +397,20 @@ class IncomingVideoTrack(MediaStreamTrack):
         # Schedule background processing to avoid blocking recv()
         async def _process_async(inp: np.ndarray, expected_size: tuple[int, int], fid: int):
             try:
+                logger.info(f"Processing video frame {fid}, input shape: {inp.shape}")
                 out_small = self.pipeline.process_video_frame(inp, fid)
+                logger.info(f"Pipeline returned frame shape: {out_small.shape if out_small is not None else 'None'}")
+                if out_small is None:
+                    logger.warning(f"Pipeline returned None for frame {fid}")
+                    return
                 if (out_small.shape[1], out_small.shape[0]) != expected_size:
                     out = cv2.resize(out_small, expected_size)
+                    logger.info(f"Resized frame from {out_small.shape[:2]} to {expected_size}")
                 else:
                     out = out_small
                 async with self._lock:
                     self._last_processed = out
+                    logger.info(f"Stored processed frame {fid}, shape: {out.shape}")
             except Exception as ex:
                 logger.error(f"Video processing error(bg): {ex}")
             finally:
@@ -417,6 +424,7 @@ class IncomingVideoTrack(MediaStreamTrack):
         # Use last processed if available, else pass-through
         async with self._lock:
             processed = self._last_processed if self._last_processed is not None else img
+            logger.info(f"Frame {self.frame_id}: using {'processed' if self._last_processed is not None else 'passthrough'} frame, shape: {processed.shape}")
         # Convert back to VideoFrame
         new_frame = frame.from_ndarray(processed, format="bgr24")
         new_frame.pts = frame.pts
