@@ -172,7 +172,7 @@ class LivePortraitONNX:
             
             # Load generator (required)
             if self.generator_model_path.exists():
-                gen_path = self.generator_model_path
+                gen_path = _ensure_opset_compat(self.generator_model_path)
                 logger.info(f"Loading generator model: {gen_path}")
                 try:
                     self.generator_session = ort.InferenceSession(

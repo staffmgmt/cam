@@ -238,6 +238,14 @@ def maybe_download() -> bool:
                     except Exception:
                         pass
                     raise RuntimeError('generator download invalid')
+                # Optional opset conversion for compatibility
+                converted = _maybe_convert_opset_to_19(dest)
+                if converted != dest:
+                    try:
+                        shutil.copyfile(converted, dest)
+                        print(f"[downloader] Replaced generator with opset19: {converted.name}")
+                    except Exception:
+                        pass
                 print(f'[downloader] ✅ Downloaded: {dest}')
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download generator (required): {e}')
@@ -255,11 +263,26 @@ def maybe_download() -> bool:
                     _download(generator_url, dest)
                     if not _is_valid_onnx(dest):
                         raise RuntimeError(f'generator invalid after re-download: {generator_url}')
+                    converted = _maybe_convert_opset_to_19(dest)
+                    if converted != dest:
+                        try:
+                            shutil.copyfile(converted, dest)
+                            print(f"[downloader] Replaced generator with opset19: {converted.name}")
+                        except Exception:
+                            pass
                     print(f'[downloader] ✅ Downloaded: {dest}')
                 except Exception as e2:
                     print(f'[downloader] ❌ Failed to refresh invalid generator: {e2}')
                     success = False
             else:
+                # Ensure compatibility even for cached file
+                converted = _maybe_convert_opset_to_19(dest)
+                if converted != dest:
+                    try:
+                        shutil.copyfile(converted, dest)
+                        print(f"[downloader] Updated cached generator to opset19")
+                    except Exception:
+                        pass
                 print(f'[downloader] ✅ Generator already exists: {dest}')
     # Optional stitching model
     stitching_url = os.getenv('MIRAGE_LP_STITCHING_URL')
