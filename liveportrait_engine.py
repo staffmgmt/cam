@@ -58,6 +58,7 @@ class LivePortraitONNX:
         # Cached appearance features
         self.reference_appearance: Optional[np.ndarray] = None
         self.reference_image: Optional[np.ndarray] = None
+        self.reference_kp: Optional[np.ndarray] = None
         
         # Performance tracking
         self.inference_times = []
@@ -234,6 +235,13 @@ class LivePortraitONNX:
                     except Exception as e2:
                         logger.error(f"Generator failed to load with basic providers as well: {e2}")
                         raise
+
+                # Log expected generator inputs for mapping
+                try:
+                    gin = [i.name for i in self.generator_session.get_inputs()]
+                    logger.info(f"Generator input names: {gin}")
+                except Exception:
+                    pass
             else:
                 logger.error("LivePortrait generator.onnx not found (required)")
                 return False
@@ -290,6 +298,14 @@ class LivePortraitONNX:
             appearance_features = outputs[0]  # Assume first output is appearance vector
             self.reference_appearance = appearance_features
             self.reference_image = reference_image.copy()
+
+            # Also compute source keypoints using motion model if available
+            if self.motion_session is not None:
+                try:
+                    kp_src = self._run_motion_for_image(reference_image)
+                    self.reference_kp = kp_src
+                except Exception as e:
+                    logger.warning(f"Failed to compute source keypoints: {e}")
             
             logger.info(f"Appearance features extracted in {inference_time*1000:.1f}ms, shape: {appearance_features.shape}")
             return appearance_features
@@ -305,28 +321,26 @@ class LivePortraitONNX:
             return None
         
         try:
-            # Preprocess image
-            input_tensor = self._preprocess_image(driving_image, size=self.motion_input_size or self.target_size)
-            
-            # Get input name
-            input_name = self.motion_session.get_inputs()[0].name
-            
-            # Run inference
-            start_time = time.time()
-            outputs = self.motion_session.run(None, {input_name: input_tensor})
-            inference_time = time.time() - start_time
-            
-            self.inference_times.append(inference_time)
-            if len(self.inference_times) > 100:
-                self.inference_times = self.inference_times[-50:]  # Keep recent times
-            
-            motion_params = outputs[0]  # Assume first output is motion vector
-            
-            return motion_params
+            kp_drive = self._run_motion_for_image(driving_image)
+            return kp_drive
             
         except Exception as e:
             logger.error(f"Motion parameter extraction failed: {e}")
             return None
+
+    def _run_motion_for_image(self, img: np.ndarray) -> np.ndarray:
+        """Helper: run motion/keypoint extractor on an image and return output tensor."""
+        # Preprocess image to motion model input size
+        input_tensor = self._preprocess_image(img, size=self.motion_input_size or self.target_size)
+        m_in = self.motion_session.get_inputs()[0].name
+        start_time = time.time()
+        outputs = self.motion_session.run(None, {m_in: input_tensor})
+        inference_time = time.time() - start_time
+        self.inference_times.append(inference_time)
+        if len(self.inference_times) > 100:
+            self.inference_times = self.inference_times[-50:]
+        # Assume first output contains keypoints/motion representation
+        return outputs[0]
     
     def synthesize_frame(self, appearance_features: np.ndarray, motion_params: np.ndarray) -> Optional[np.ndarray]:
         """Synthesize animated frame from appearance + motion"""
@@ -344,15 +358,44 @@ class LivePortraitONNX:
             inputs = self.generator_session.get_inputs()
             input_names = [inp.name for inp in inputs]
             
-            # Prepare inputs - exact format depends on model architecture
-            feed_dict = {}
-            if len(input_names) >= 2:
-                feed_dict[input_names[0]] = appearance_features
-                feed_dict[input_names[1]] = motion_params
+            # Prepare inputs based on names commonly used in LivePortrait ONNX variants
+            feed_dict: Dict[str, np.ndarray] = {}
+            name_set = set(n.lower() for n in input_names)
+
+            # Map appearance to appropriate input
+            if 'feature_3d' in name_set:
+                feed_dict[[n for n in input_names if n.lower() == 'feature_3d'][0]] = appearance_features
+            elif 'appearance' in name_set:
+                feed_dict[[n for n in input_names if n.lower() == 'appearance'][0]] = appearance_features
             else:
-                # Concatenate features if single input expected
-                combined_features = np.concatenate([appearance_features, motion_params], axis=-1)
-                feed_dict[input_names[0]] = combined_features
+                # fallback: first input
+                feed_dict[input_names[0]] = appearance_features
+
+            # Map driving motion/keypoints
+            if 'kp_driving' in name_set:
+                feed_dict[[n for n in input_names if n.lower() == 'kp_driving'][0]] = motion_params
+            elif 'driving' in name_set:
+                feed_dict[[n for n in input_names if n.lower() == 'driving'][0]] = motion_params
+            else:
+                # If only two inputs and first is appearance, second should be motion
+                if len(input_names) >= 2:
+                    feed_dict[input_names[1]] = motion_params
+
+            # Map source keypoints if required
+            if 'kp_source' in name_set or 'source_kp' in name_set:
+                kp_name = 'kp_source' if 'kp_source' in name_set else 'source_kp'
+                if self.reference_kp is None:
+                    # Attempt to compute from cached reference image
+                    if self.reference_image is not None and self.motion_session is not None:
+                        try:
+                            self.reference_kp = self._run_motion_for_image(self.reference_image)
+                        except Exception as e:
+                            logger.error(f"Failed to compute kp_source on demand: {e}")
+                            return None
+                    else:
+                        logger.error("kp_source required but reference keypoints are unavailable")
+                        return None
+                feed_dict[[n for n in input_names if n.lower() == kp_name][0]] = self.reference_kp
             
             # Run inference
             start_time = time.time()
