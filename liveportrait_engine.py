@@ -481,6 +481,13 @@ class LivePortraitONNX:
                                 if c_hint in (2, 3) and total % c_hint == 0:
                                     K2 = total // c_hint
                                     arr = arr.reshape((B, K2, c_hint))
+                    # Enforce exact K if known (slice/pad rows)
+                    if exp_k is not None and isinstance(exp_k, int) and exp_k > 0 and K != exp_k:
+                        if K > exp_k:
+                            arr = arr[:, :exp_k, :]
+                        else:
+                            pad_rows = np.zeros((B, exp_k - K, arr.shape[2]), dtype=arr.dtype)
+                            arr = np.concatenate([arr, pad_rows], axis=1)
                 # Ensure batch dim present
                 if arr.ndim == 2:
                     arr = np.expand_dims(arr, 0)
