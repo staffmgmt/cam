@@ -16,6 +16,8 @@ import shutil
 from pathlib import Path
 import time
 from typing import Optional
+import os
+import errno
 
 try:
     import requests  # type: ignore
@@ -46,7 +48,8 @@ def _download_requests(url: str, dest: Path, timeout: float = 30.0, retries: int
     if requests is None:
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + '.part')
+    # Use a unique temporary filename to avoid races across concurrent downloads
+    tmp = dest.with_suffix(dest.suffix + f'.part.{os.getpid()}.{int(time.time()*1000)}')
     for attempt in range(1, retries + 1):
         try:
             print(f"[downloader] (requests) GET {url} -> {dest} (attempt {attempt}/{retries})")
@@ -54,11 +57,19 @@ def _download_requests(url: str, dest: Path, timeout: float = 30.0, retries: int
                 r.raise_for_status()
                 with open(tmp, 'wb') as f:
                     shutil.copyfileobj(r.raw, f)
-            tmp.replace(dest)
+            # Atomic replace
+            os.replace(tmp, dest)
             return True
         except Exception as e:
             print(f"[downloader] requests error: {e}")
             time.sleep(min(2 * attempt, 6))
+        finally:
+            # Clean up any stray temp file
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
     return False
 
 def _download_hf(url: str, dest: Path) -> bool:
@@ -132,6 +143,37 @@ def _download(url: str, dest: Path):
         return
     raise RuntimeError("all download methods failed")
 
+# Simple cross-process file lock using exclusive create of a .lock file
+class _FileLock:
+    def __init__(self, target: Path, timeout: float = 60.0, poll: float = 0.2):
+        self.lock_path = target.with_suffix(target.suffix + '.lock')
+        self.timeout = timeout
+        self.poll = poll
+        self.acquired = False
+
+    def __enter__(self):
+        start = time.time()
+        while True:
+            try:
+                # O_CREAT|O_EXCL ensures exclusive creation
+                fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                self.acquired = True
+                return self
+            except OSError as e:
+                if e.errno != errno.EEXIST:
+                    raise
+                if (time.time() - start) > self.timeout:
+                    raise TimeoutError(f"Timeout acquiring lock {self.lock_path}")
+                time.sleep(self.poll)
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.acquired:
+            try:
+                os.unlink(str(self.lock_path))
+            except Exception:
+                pass
+
 
 def maybe_download() -> bool:
     if os.getenv('MIRAGE_DOWNLOAD_MODELS', '1').lower() not in ('1', 'true', 'yes', 'on'):
@@ -156,7 +198,10 @@ def maybe_download() -> bool:
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading appearance extractor...')
-                _download(app_url, dest)
+                with _FileLock(dest):
+                    # Re-check after taking lock
+                    if not dest.exists():
+                        _download(app_url, dest)
                 # Optionally convert opset for compatibility
                 converted = _maybe_convert_opset_to_19(dest)
                 if converted != dest:
@@ -193,7 +238,9 @@ def maybe_download() -> bool:
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading motion extractor...')
-                _download(motion_url, dest)
+                with _FileLock(dest):
+                    if not dest.exists():
+                        _download(motion_url, dest)
                 converted = _maybe_convert_opset_to_19(dest)
                 if converted != dest:
                     try:
@@ -229,7 +276,9 @@ def maybe_download() -> bool:
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading generator model...')
-                _download(generator_url, dest)
+                with _FileLock(dest):
+                    if not dest.exists():
+                        _download(generator_url, dest)
                 # Validate ONNX
                 if not _is_valid_onnx(dest):
                     print(f"[downloader] ❌ Generator ONNX validation failed for {generator_url}")
@@ -238,14 +287,6 @@ def maybe_download() -> bool:
                     except Exception:
                         pass
                     raise RuntimeError('generator download invalid')
-                # Optional opset conversion for compatibility
-                converted = _maybe_convert_opset_to_19(dest)
-                if converted != dest:
-                    try:
-                        shutil.copyfile(converted, dest)
-                        print(f"[downloader] Replaced generator with opset19: {converted.name}")
-                    except Exception:
-                        pass
                 print(f'[downloader] ✅ Downloaded: {dest}')
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download generator (required): {e}')
@@ -260,29 +301,16 @@ def maybe_download() -> bool:
                     pass
                 try:
                     print(f'[downloader] Downloading generator model...')
-                    _download(generator_url, dest)
+                    with _FileLock(dest):
+                        if not dest.exists():
+                            _download(generator_url, dest)
                     if not _is_valid_onnx(dest):
                         raise RuntimeError(f'generator invalid after re-download: {generator_url}')
-                    converted = _maybe_convert_opset_to_19(dest)
-                    if converted != dest:
-                        try:
-                            shutil.copyfile(converted, dest)
-                            print(f"[downloader] Replaced generator with opset19: {converted.name}")
-                        except Exception:
-                            pass
                     print(f'[downloader] ✅ Downloaded: {dest}')
                 except Exception as e2:
                     print(f'[downloader] ❌ Failed to refresh invalid generator: {e2}')
                     success = False
             else:
-                # Ensure compatibility even for cached file
-                converted = _maybe_convert_opset_to_19(dest)
-                if converted != dest:
-                    try:
-                        shutil.copyfile(converted, dest)
-                        print(f"[downloader] Updated cached generator to opset19")
-                    except Exception:
-                        pass
                 print(f'[downloader] ✅ Generator already exists: {dest}')
     # Optional stitching model
     stitching_url = os.getenv('MIRAGE_LP_STITCHING_URL')

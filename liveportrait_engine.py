@@ -10,7 +10,7 @@ import onnxruntime as ort
 import os
 import onnx  # type: ignore
 from onnx import version_converter  # type: ignore
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from pathlib import Path
 import logging
 import time
@@ -47,29 +47,29 @@ class LivePortraitONNX:
         self.generator_model_path = self.models_dir / "generator.onnx"
         
         # ONNX Runtime sessions
-        self.appearance_session: Optional[ort.InferenceSession] = None
-        self.motion_session: Optional[ort.InferenceSession] = None
-        self.generator_session: Optional[ort.InferenceSession] = None
+        self.appearance_session = None  # type: Optional[ort.InferenceSession]
+        self.motion_session = None      # type: Optional[ort.InferenceSession]
+        self.generator_session = None   # type: Optional[ort.InferenceSession]
 
         # Model-specific input sizes (width, height), inferred from ONNX model inputs when loaded
-        self.appearance_input_size: Optional[Tuple[int, int]] = None
-        self.motion_input_size: Optional[Tuple[int, int]] = None
-    self.motion_output_names: Optional[list[str]] = None
+        self.appearance_input_size = None  # type: Optional[Tuple[int, int]]
+        self.motion_input_size = None      # type: Optional[Tuple[int, int]]
+        self.motion_output_names = None    # type: Optional[List[str]]
         
         # Cached appearance features
-        self.reference_appearance: Optional[np.ndarray] = None
-        self.reference_image: Optional[np.ndarray] = None
-        self.reference_kp: Optional[np.ndarray] = None
+        self.reference_appearance = None  # type: Optional[np.ndarray]
+        self.reference_image = None       # type: Optional[np.ndarray]
+        self.reference_kp = None          # type: Optional[np.ndarray]
         
         # Performance tracking
         self.inference_times = []
         
-    def _get_onnx_providers(self) -> list[str]:
+    def _get_onnx_providers(self) -> List[str]:
         """Get optimal ONNX execution providers. Enforce GPU if required."""
         avail = ort.get_available_providers()
         logger.info(f"ONNX Runtime available providers: {avail}")
         require_gpu = os.getenv("MIRAGE_REQUIRE_GPU", "0") in ("1", "true", "True")
-        providers: list[str] = []
+        providers = []  # type: List[str]
         if self.device == "cuda" and "CUDAExecutionProvider" in avail:
             providers.append("CUDAExecutionProvider")
         if require_gpu:
@@ -221,8 +221,9 @@ class LivePortraitONNX:
             
             # Load generator (required)
             if self.generator_model_path.exists():
-                gen_path = _ensure_opset_compat(self.generator_model_path)
-                logger.info(f"Loading generator model: {gen_path}")
+                # Do NOT downgrade opset for generator; rely on ORT >= 1.18 support for opset 20
+                gen_path = self.generator_model_path
+                logger.info(f"Loading generator model (no opset downgrade): {gen_path}")
                 try:
                     self.generator_session = ort.InferenceSession(
                         str(gen_path),
