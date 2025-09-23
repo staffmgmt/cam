@@ -323,7 +323,21 @@ class LivePortraitONNX:
             if self.motion_session is not None:
                 try:
                     kp_src = self._run_motion_for_image(reference_image)
-                    self.reference_kp = kp_src
+                    # Coerce to ndarray if dict
+                    if isinstance(kp_src, dict):
+                        cand = (
+                            kp_src.get('kp_source') or kp_src.get('source') or
+                            next((v for k,v in kp_src.items() if isinstance(v, np.ndarray) and 'source' in k.lower()), None) or
+                            next((v for v in kp_src.values() if isinstance(v, np.ndarray)), None)
+                        )
+                        self.reference_kp = cand
+                    elif isinstance(kp_src, np.ndarray):
+                        self.reference_kp = kp_src
+                    else:
+                        try:
+                            self.reference_kp = np.asarray(kp_src, dtype=np.float32)
+                        except Exception:
+                            self.reference_kp = None
                 except Exception as e:
                     logger.warning(f"Failed to compute source keypoints: {e}")
             
@@ -475,6 +489,36 @@ class LivePortraitONNX:
     def _neural_synthesis(self, appearance_features: np.ndarray, motion_params: np.ndarray) -> Optional[np.ndarray]:
         """Neural synthesis using generator model"""
         try:
+            # Helper to coerce dict/list keypoint containers into numpy arrays
+            def _coerce_kp_value(val):
+                if isinstance(val, np.ndarray):
+                    return val
+                if isinstance(val, dict):
+                    # Prefer driving/source specific keys, else first ndarray
+                    order = ['kp_driving', 'driving', 'kp_source', 'source', 'out0']
+                    for key in order:
+                        v = val.get(key)
+                        if isinstance(v, np.ndarray):
+                            return v
+                    for v in val.values():
+                        if isinstance(v, np.ndarray):
+                            return v
+                    # As a last resort, try to arrayify a value
+                    try:
+                        anyv = next(iter(val.values()))
+                        return np.asarray(anyv, dtype=np.float32)
+                    except Exception:
+                        return None
+                if isinstance(val, (list, tuple)):
+                    try:
+                        return np.asarray(val, dtype=np.float32)
+                    except Exception:
+                        return None
+                try:
+                    return np.asarray(val, dtype=np.float32)
+                except Exception:
+                    return None
+
             # Get input names
             inputs = self.generator_session.get_inputs()
             input_names = [inp.name for inp in inputs]
@@ -493,37 +537,33 @@ class LivePortraitONNX:
                 feed_dict[input_names[0]] = appearance_features
 
             # Map driving motion/keypoints
-            if 'kp_driving' in name_set:
-                feed_dict[[n for n in input_names if n.lower() == 'kp_driving'][0]] = motion_params
-            elif 'driving' in name_set:
-                feed_dict[[n for n in input_names if n.lower() == 'driving'][0]] = motion_params
+            mp = _coerce_kp_value(motion_params)
+            if 'kp_driving' in name_set and mp is not None:
+                feed_dict[[n for n in input_names if n.lower() == 'kp_driving'][0]] = mp
+            elif 'driving' in name_set and mp is not None:
+                feed_dict[[n for n in input_names if n.lower() == 'driving'][0]] = mp
             else:
                 # If only two inputs and first is appearance, second should be motion
-                if len(input_names) >= 2:
-                    feed_dict[input_names[1]] = motion_params
+                if len(input_names) >= 2 and mp is not None:
+                    feed_dict[input_names[1]] = mp
 
             # Map source keypoints if required
             if 'kp_source' in name_set or 'source_kp' in name_set:
                 kp_name = 'kp_source' if 'kp_source' in name_set else 'source_kp'
-                if self.reference_kp is None:
+                src_kp = _coerce_kp_value(self.reference_kp)
+                if src_kp is None:
                     # Attempt to compute from motion model outputs if available
                     if self.reference_image is not None and self.motion_session is not None:
                         try:
                             ref_motion = self._run_motion_for_image(self.reference_image)
-                            if isinstance(ref_motion, dict):
-                                rk = ref_motion.get('kp_source') or ref_motion.get('source') or next((v for k, v in ref_motion.items() if 'source' in k), None)
-                                if rk is None:
-                                    rk = next((v for v in ref_motion.values() if isinstance(v, np.ndarray)), None)
-                                self.reference_kp = rk
-                            else:
-                                self.reference_kp = ref_motion
+                            self.reference_kp = _coerce_kp_value(ref_motion)
                         except Exception as e:
                             logger.error(f"Failed to compute kp_source on demand: {e}")
                             return None
                     else:
                         logger.error("kp_source required but reference keypoints are unavailable")
                         return None
-                feed_dict[[n for n in input_names if n.lower() == kp_name][0]] = self.reference_kp
+                feed_dict[[n for n in input_names if n.lower() == kp_name][0]] = _coerce_kp_value(self.reference_kp)
 
             # Helper to normalize keypoint tensors (ensure [B, K, C]) using generator meta
             def _normalize_kp(name: str, arr: np.ndarray) -> np.ndarray:
