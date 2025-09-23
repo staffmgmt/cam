@@ -163,24 +163,12 @@ def maybe_download() -> bool:
                 _download(generator_url, dest)
                 # Validate ONNX
                 if not _is_valid_onnx(dest):
-                    print(f"[downloader] ❌ Generator ONNX validation failed, retrying with alternate URLs if provided")
+                    print(f"[downloader] ❌ Generator ONNX validation failed for {generator_url}")
                     try:
                         dest.unlink()
                     except Exception:
                         pass
-                    alt_urls = [u.strip() for u in os.getenv('MIRAGE_LP_GENERATOR_ALT_URLS', '').split(',') if u.strip()]
-                    success_alt = False
-                    for u in alt_urls:
-                        try:
-                            print(f'[downloader] Trying alternate generator URL: {u}')
-                            _download(u, dest)
-                            if _is_valid_onnx(dest):
-                                success_alt = True
-                                break
-                        except Exception as e2:
-                            print(f'[downloader] Alternate URL failed: {e2}')
-                    if not success_alt:
-                        raise RuntimeError('generator download invalid from all sources')
+                    raise RuntimeError('generator download invalid')
                 print(f'[downloader] ✅ Downloaded: {dest}')
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download generator (required): {e}')
@@ -197,7 +185,7 @@ def maybe_download() -> bool:
                     print(f'[downloader] Downloading generator model...')
                     _download(generator_url, dest)
                     if not _is_valid_onnx(dest):
-                        raise RuntimeError('generator invalid after re-download')
+                        raise RuntimeError(f'generator invalid after re-download: {generator_url}')
                     print(f'[downloader] ✅ Downloaded: {dest}')
                 except Exception as e2:
                     print(f'[downloader] ❌ Failed to refresh invalid generator: {e2}')

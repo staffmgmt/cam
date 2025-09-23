@@ -40,13 +40,8 @@ class LivePortraitONNX:
         # Model paths
         self.appearance_model_path = self.models_dir / "appearance_feature_extractor.onnx"
         self.motion_model_path = self.models_dir / "motion_extractor.onnx"
-        # The upstream repo provides generator as warping_spade.onnx (or warping_spade-fix.onnx).
-        # Prefer a local alias 'generator.onnx' but fall back to these names if missing.
+        # Single required generator path; no filename fallbacks
         self.generator_model_path = self.models_dir / "generator.onnx"
-        self._alt_generator_paths = [
-            self.models_dir / "warping_spade.onnx",
-            self.models_dir / "warping_spade-fix.onnx",
-        ]
         
         # ONNX Runtime sessions
         self.appearance_session: Optional[ort.InferenceSession] = None
@@ -156,27 +151,9 @@ class LivePortraitONNX:
                 logger.error(f"Motion model not found: {self.motion_model_path}")
                 return False
             
-            # Load generator if available (optional - can use warping fallback)
-            gen_path = None
+            # Load generator (required)
             if self.generator_model_path.exists():
                 gen_path = self.generator_model_path
-            else:
-                for p in self._alt_generator_paths:
-                    if p.exists():
-                        gen_path = p
-                        break
-            if gen_path is not None:
-                # Optionally create an alias at generator.onnx for diagnostics endpoints
-                try:
-                    if gen_path != self.generator_model_path and not self.generator_model_path.exists():
-                        # create a lightweight copy to keep tooling simple
-                        try:
-                            import shutil
-                            shutil.copyfile(gen_path, self.generator_model_path)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
                 logger.info(f"Loading generator model: {gen_path}")
                 try:
                     self.generator_session = ort.InferenceSession(
@@ -210,7 +187,8 @@ class LivePortraitONNX:
                         logger.error(f"Generator failed to load with basic providers as well: {e2}")
                         raise
             else:
-                logger.info("Generator model not available - using motion-based warping")
+                logger.error("LivePortrait generator.onnx not found (required)")
+                return False
             
             logger.info("LivePortrait ONNX models loaded successfully")
             return True
