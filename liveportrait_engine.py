@@ -54,6 +54,7 @@ class LivePortraitONNX:
         # Model-specific input sizes (width, height), inferred from ONNX model inputs when loaded
         self.appearance_input_size: Optional[Tuple[int, int]] = None
         self.motion_input_size: Optional[Tuple[int, int]] = None
+    self.motion_output_names: Optional[list[str]] = None
         
         # Cached appearance features
         self.reference_appearance: Optional[np.ndarray] = None
@@ -208,6 +209,10 @@ class LivePortraitONNX:
                         if isinstance(h, int) and isinstance(w, int) and h > 0 and w > 0:
                             self.motion_input_size = (int(w), int(h))
                             logger.info(f"Motion model expects input (HxW): {h}x{w}")
+                    # Log motion outputs
+                    outs = self.motion_session.get_outputs()
+                    self.motion_output_names = [o.name for o in outs]
+                    logger.info(f"Motion model outputs: {[(o.name, list(o.shape) if isinstance(o.shape, (list, tuple)) else o.shape) for o in outs]}")
                 except Exception as e:
                     logger.warning(f"Unable to infer motion input size: {e}")
             else:
@@ -335,15 +340,23 @@ class LivePortraitONNX:
             return None
         
         try:
-            kp_drive = self._run_motion_for_image(driving_image)
-            return kp_drive
+            motion = self._run_motion_for_image(driving_image)
+            # Prefer explicit kp_driving from motion model if available
+            if isinstance(motion, dict):
+                kp_drive = motion.get('kp_driving') or motion.get('driving')
+                if kp_drive is None:
+                    # Fallback to first array value
+                    kp_drive = next((v for v in motion.values() if isinstance(v, np.ndarray)), None)
+                return kp_drive
+            else:
+                return motion
             
         except Exception as e:
             logger.error(f"Motion parameter extraction failed: {e}")
             return None
 
-    def _run_motion_for_image(self, img: np.ndarray) -> np.ndarray:
-        """Helper: run motion/keypoint extractor on an image and return output tensor."""
+    def _run_motion_for_image(self, img: np.ndarray):
+        """Helper: run motion/keypoint extractor on an image and return structured outputs."""
         # Preprocess image to motion model input size
         input_tensor = self._preprocess_image(img, size=self.motion_input_size or self.target_size)
         m_in = self.motion_session.get_inputs()[0].name
@@ -353,8 +366,101 @@ class LivePortraitONNX:
         self.inference_times.append(inference_time)
         if len(self.inference_times) > 100:
             self.inference_times = self.inference_times[-50:]
-        # Assume first output contains keypoints/motion representation
-        return outputs[0]
+        # Structure outputs by name if available
+        outs_meta = self.motion_session.get_outputs()
+        named = {}
+        try:
+            for i, meta in enumerate(outs_meta):
+                name = meta.name
+                arr = outputs[i]
+                arr = self._reshape_to_kp(arr, meta)
+                arr = self._normalize_kp_values(arr)
+                named[name] = arr
+        except Exception:
+            # Fallback: best-effort reshape/normalize for first output
+            arr0 = outputs[0]
+            named = {outs_meta[0].name if outs_meta else 'out0': self._normalize_kp_values(self._reshape_to_kp(arr0, outs_meta[0] if outs_meta else None))}
+        return named
+
+    def _reshape_to_kp(self, arr: np.ndarray, meta) -> np.ndarray:
+        """Reshape arbitrary array into [B,K,C] for keypoints based on meta or heuristics."""
+        a = arr
+        if not isinstance(a, np.ndarray):
+            a = np.array(a)
+        # Squeeze singleton dims except batch
+        while a.ndim > 3 and a.shape[-1] == 1:
+            a = np.squeeze(a, axis=-1)
+        # Heuristic expected K,C
+        exp_k = None
+        exp_c = None
+        if meta is not None and isinstance(meta.shape, (list, tuple)) and len(meta.shape) >= 2:
+            if len(meta.shape) == 3:
+                exp_k = meta.shape[1] if isinstance(meta.shape[1], int) else None
+                exp_c = meta.shape[2] if isinstance(meta.shape[2], int) else None
+        # Default to 21x3 if unknown but plausible product
+        if exp_k is None and exp_c is None and a.size in (42, 63, 66):
+            exp_k, exp_c = 21, 2 if a.size == 42 else (21, 3)
+        # Ensure rank
+        if a.ndim == 1:
+            # Treat as flattened (K*C)
+            if exp_k and exp_c and a.size == exp_k * exp_c:
+                a = a.reshape((1, exp_k, exp_c))
+            else:
+                a = a.reshape((1, a.shape[0], 1))
+        elif a.ndim == 2:
+            # [B, N] or [N, C]
+            B, N = (1, a.shape[0]) if a.shape[1] in (2, 3) else (a.shape[0], a.shape[1])
+            if exp_c in (2, 3) and N % exp_c == 0:
+                K = N // exp_c
+                a = a.reshape((B, K, exp_c))
+            elif exp_k and exp_c and N == exp_k * exp_c:
+                a = a.reshape((B, exp_k, exp_c))
+            else:
+                a = a.reshape((B, N, 1))
+        # Pad/slice last dim to 3
+        if a.ndim == 3:
+            B, K, C = a.shape
+            tgt_c = exp_c if exp_c in (2, 3) else (3 if C in (1, 2, 3) else C)
+            if C != tgt_c:
+                if C > tgt_c:
+                    a = a[..., :tgt_c]
+                else:
+                    pad = np.zeros((B, K, tgt_c - C), dtype=a.dtype)
+                    a = np.concatenate([a, pad], axis=-1)
+            # Enforce K=21 if meta suggests (or default)
+            tgt_k = exp_k if isinstance(exp_k, int) and exp_k > 0 else 21
+            if K != tgt_k:
+                if K > tgt_k:
+                    a = a[:, :tgt_k, :]
+                else:
+                    pad_rows = np.zeros((B, tgt_k - K, a.shape[2]), dtype=a.dtype)
+                    a = np.concatenate([a, pad_rows], axis=1)
+        return a.astype(np.float32)
+
+    def _normalize_kp_values(self, arr: np.ndarray) -> np.ndarray:
+        """Normalize keypoint coordinates to [-1, 1] range if they look like pixel coords.
+        Expects arr of shape [B,K,2 or 3]. Uses motion input size as reference.
+        """
+        if arr.ndim != 3 or arr.shape[-1] < 2:
+            return arr
+        B, K, C = arr.shape
+        # Determine if values look like pixels (>1.0)
+        max_abs = float(np.nanmax(np.abs(arr[..., :2]))) if arr.size > 0 else 0.0
+        w, h = (self.motion_input_size or self.target_size)
+        # Normalize if probable pixel scale
+        if max_abs > 1.5 and w and h:
+            x = arr[..., 0]
+            y = arr[..., 1]
+            # Map [0, W-1] -> [-1, 1]
+            arr[..., 0] = (x / max(w - 1, 1) * 2.0) - 1.0
+            arr[..., 1] = (y / max(h - 1, 1) * 2.0) - 1.0
+        # Ensure z exists
+        if C == 2:
+            z = np.zeros((B, K, 1), dtype=arr.dtype)
+            arr = np.concatenate([arr, z], axis=-1)
+        # Clip to reasonable range
+        arr[..., :2] = np.clip(arr[..., :2], -2.0, 2.0)
+        return arr
     
     def synthesize_frame(self, appearance_features: np.ndarray, motion_params: np.ndarray) -> Optional[np.ndarray]:
         """Synthesize animated frame from appearance + motion"""
@@ -399,10 +505,17 @@ class LivePortraitONNX:
             if 'kp_source' in name_set or 'source_kp' in name_set:
                 kp_name = 'kp_source' if 'kp_source' in name_set else 'source_kp'
                 if self.reference_kp is None:
-                    # Attempt to compute from cached reference image
+                    # Attempt to compute from motion model outputs if available
                     if self.reference_image is not None and self.motion_session is not None:
                         try:
-                            self.reference_kp = self._run_motion_for_image(self.reference_image)
+                            ref_motion = self._run_motion_for_image(self.reference_image)
+                            if isinstance(ref_motion, dict):
+                                rk = ref_motion.get('kp_source') or ref_motion.get('source') or next((v for k, v in ref_motion.items() if 'source' in k), None)
+                                if rk is None:
+                                    rk = next((v for v in ref_motion.values() if isinstance(v, np.ndarray)), None)
+                                self.reference_kp = rk
+                            else:
+                                self.reference_kp = ref_motion
                         except Exception as e:
                             logger.error(f"Failed to compute kp_source on demand: {e}")
                             return None
