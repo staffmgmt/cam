@@ -96,6 +96,13 @@ class LivePortraitONNX:
         """Load all available ONNX models"""
         try:
             providers = self._get_onnx_providers()
+            # Quick runtime diagnostics for CUDA provider
+            if "CUDAExecutionProvider" in providers:
+                try:
+                    cuda_props = ort.get_device()  # simple call to ensure CUDA linked
+                    logger.info(f"ORT device probing ok; device: {cuda_props}")
+                except Exception as e:
+                    logger.warning(f"ORT CUDA probing raised: {e}")
             # Optionally register custom ops shared library
             self._register_custom_ops()
             

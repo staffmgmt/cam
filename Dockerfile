@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     libsndfile1 \
+    cuda-nvrtc-11-8 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -94,6 +95,7 @@ ENV HOME=/app \
     TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers \
     INSIGHTFACE_HOME=/app/.insightface \
     MPLCONFIGDIR=/tmp/matplotlib \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH} \
     MIRAGE_ORT_DISABLE_SHAPE_INFERENCE=1 \
     MIRAGE_REQUIRE_GPU=1 \
     MIRAGE_FORCE_DOWNLOAD_GENERATOR=1 \
