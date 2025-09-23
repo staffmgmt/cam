@@ -67,8 +67,8 @@ RUN mkdir -p \
 ARG MIRAGE_DOWNLOAD_MODELS=1
 ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/appearance_feature_extractor.onnx"
 ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/motion_extractor.onnx"
-# Keep generator with grid fix from myn0908 repository
-ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/generator_fix_grid.onnx"
+# Use FasterLivePortrait generator with opset≤19 to ensure ORT 1.16.3 compatibility
+ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/generator.onnx"
 # Optional custom ops plugin is disabled by default (TensorRT not present in this image)
 # ARG MIRAGE_LP_GRID_PLUGIN_URL=""
 ARG MIRAGE_LP_STITCHING_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/stitching.onnx"
