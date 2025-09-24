@@ -11,6 +11,7 @@ import asyncio
 import numpy as np
 import cv2
 from typing import Any, Dict, List
+import hashlib
 from metrics import metrics as _metrics_singleton, Metrics
 from config import config
 from voice_processor import voice_processor
@@ -96,14 +97,8 @@ async def initialize_pipeline():
         return {"status": "already_initialized", "message": "Pipeline already loaded"}
     
     try:
-        # Best-effort: download models first if enabled via env
-        if model_downloader is not None:
-            try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, model_downloader.maybe_download)
-            except Exception as de:
-                # Log but continue; pipeline may still load with partial components
-                print(f"[init] downloader error: {de}")
+        # Downloader removed from initialize; provisioning handled exclusively by entrypoint.
+        # This preserves deterministic model presence and avoids duplicate downloads.
         success = await pipeline.initialize()
         if success:
             pipeline_initialized = True
@@ -128,6 +123,62 @@ async def initialize_pipeline():
             return {"status": "error", "message": "Failed to initialize pipeline", "details": stats}
     except Exception as e:
         return {"status": "error", "message": f"Initialization error: {str(e)}"}
+
+
+    @app.get("/debug/models")
+    async def debug_models(limit: int = 20):
+        """Report presence, size, sha256 (if small enough) and recent audit entries.
+        limit: number of recent audit log lines to return (tail)."""
+        lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
+        models = {}
+        names = [
+            'appearance_feature_extractor.onnx',
+            'motion_extractor.onnx',
+            'generator.onnx',
+            'stitching.onnx',
+            'libgrid_sample_3d_plugin.so'
+        ]
+        hash_disabled = os.getenv('MIRAGE_HASH_MODELS', '1').lower() in ('0','false','no','off')
+        max_hash_bytes = int(os.getenv('MIRAGE_HASH_MAX_BYTES', '52428800'))  # default 50MB
+        for name in names:
+            p = lp_dir / name
+            info: Dict[str, Any] = {"exists": p.exists()}
+            if p.exists():
+                try:
+                    size = p.stat().st_size
+                    info['size_bytes'] = size
+                    if not hash_disabled and size <= max_hash_bytes:
+                        h = hashlib.sha256()
+                        with p.open('rb') as f:
+                            for chunk in iter(lambda: f.read(8192), b''):
+                                h.update(chunk)
+                        info['sha256'] = h.hexdigest()
+                    else:
+                        info['sha256'] = None if hash_disabled else 'skipped_large'
+                except Exception as e:  # pragma: no cover
+                    info['error'] = str(e)
+            models[name] = info
+        # Sentinel / audit
+        sentinel = (lp_dir / '.provisioned').exists()
+        audit_path = lp_dir / '_download_audit.jsonl'
+        audit_entries: List[Dict[str, Any]] = []
+        if audit_path.exists():
+            try:
+                lines = audit_path.read_text(encoding='utf-8').strip().splitlines()
+                for line in lines[-limit:]:
+                    try:
+                        audit_entries.append(json.loads(line))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return {
+            'models': models,
+            'sentinel_present': sentinel,
+            'audit_tail': audit_entries,
+            'audit_count': len(audit_entries),
+            'limit': limit,
+        }
 
 
 @app.post("/set_reference")
@@ -345,22 +396,7 @@ async def log_config():
     }
     print("[startup]", startup_line)
     # Model download: ensure presence once, then also fire background attempt
-    if model_downloader is not None:
-        try:
-            from pathlib import Path
-            lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
-            app_p = lp_dir / 'appearance_feature_extractor.onnx'
-            motion_p = lp_dir / 'motion_extractor.onnx'
-            need = (os.getenv('MIRAGE_DOWNLOAD_MODELS','0').lower() in ('1','true','yes','on')) and (not app_p.exists())
-            if need:
-                loop = asyncio.get_running_loop()
-                # Blocking attempt once (in executor to keep loop responsive)
-                await loop.run_in_executor(None, model_downloader.maybe_download)
-            # Also kick a non-blocking attempt regardless
-            loop = asyncio.get_running_loop()
-            loop.run_in_executor(None, model_downloader.maybe_download)
-        except Exception as e:
-            print(f"[startup] downloader scheduling error: {e}")
+    # Downloader invocation removed (entrypoint is now single source of truth)
 
 
 @app.get("/debug/models")
@@ -397,28 +433,7 @@ async def debug_models():
     return {"files": files, "flags": flags, "all_required_present": all_required, "pipeline_stats": stats}
 
 
-@app.post("/debug/download_models")
-async def debug_download_models():
-    """Force model download attempt now and return updated file presence."""
-    if model_downloader is None:
-        return {"status": "error", "message": "model_downloader not available"}
-    try:
-        loop = asyncio.get_running_loop()
-        ok = await loop.run_in_executor(None, model_downloader.maybe_download)
-    except Exception as e:
-        ok = False
-        err = str(e)
-    # Reuse file presence logic
-    from pathlib import Path
-    lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
-    files = {}
-    for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx"):
-        p = lp_dir / name
-        files[name] = {"exists": p.exists(), "size_bytes": p.stat().st_size if p.exists() else 0}
-    resp = {"status": "success" if ok else "error", "files": files}
-    if not ok:
-        resp["message"] = locals().get('err', 'download failed')
-    return resp
+# Removed /debug/download_models endpoint to avoid triggering duplicate downloads after provisioning.
 
 
 # Note: The Dockerfile / README launch with: uvicorn app:app --port 7860

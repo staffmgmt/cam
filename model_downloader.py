@@ -175,48 +175,57 @@ class _FileLock:
                 pass
 
 
+def _audit(event: str, **extra):
+    try:
+        lp_dir = LP_DIR
+        lp_dir.mkdir(parents=True, exist_ok=True)
+        audit_path = lp_dir / '_download_audit.jsonl'
+        payload = {
+            'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'event': event,
+            'tag': os.getenv('MIRAGE_DL_TAG', 'downloader'),
+        }
+        payload.update(extra)
+        with audit_path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(payload) + '\n')
+    except Exception:
+        pass
+
+
 def maybe_download() -> bool:
     if os.getenv('MIRAGE_DOWNLOAD_MODELS', '1').lower() not in ('1', 'true', 'yes', 'on'):
         print('[downloader] MIRAGE_DOWNLOAD_MODELS disabled')
+        _audit('disabled')
         return False
-    
+
     app_url = os.getenv('MIRAGE_LP_APPEARANCE_URL')
     motion_url = os.getenv('MIRAGE_LP_MOTION_URL')
-    force_app = os.getenv('MIRAGE_FORCE_DOWNLOAD_APPEARANCE', '0').lower() in ('1','true','yes','on')
-    force_mot = os.getenv('MIRAGE_FORCE_DOWNLOAD_MOTION', '0').lower() in ('1','true','yes','on')
     success = True
+    _audit('start')
     
     # Download LivePortrait appearance extractor
     if app_url:
         dest = LP_DIR / 'appearance_feature_extractor.onnx'
-        if force_app and dest.exists():
-            try:
-                dest.unlink()
-                print(f"[downloader] Forcing re-download of appearance: removed existing {dest}")
-            except Exception as e:
-                print(f"[downloader] Could not remove existing appearance for force download: {e}")
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading appearance extractor...')
                 with _FileLock(dest):
-                    # Re-check after taking lock
                     if not dest.exists():
                         _download(app_url, dest)
-                # Optionally convert opset for compatibility
                 converted = _maybe_convert_opset_to_19(dest)
                 if converted != dest:
-                    # Prefer converted model by replacing original
                     try:
                         shutil.copyfile(converted, dest)
                         print(f"[downloader] Replaced appearance with opset19: {converted.name}")
                     except Exception:
                         pass
                 print(f'[downloader] ✅ Downloaded: {dest}')
+                _audit('download_ok', model='appearance', path=str(dest))
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download appearance extractor: {e}')
+                _audit('download_error', model='appearance', error=str(e))
                 success = False
         else:
-            # Ensure compatibility if a cached file is opset>19
             converted = _maybe_convert_opset_to_19(dest)
             if converted != dest:
                 try:
@@ -225,16 +234,11 @@ def maybe_download() -> bool:
                 except Exception:
                     pass
             print(f'[downloader] ✅ Appearance extractor already exists: {dest}')
+            _audit('exists', model='appearance', path=str(dest))
     
     # Download LivePortrait motion extractor
     if motion_url:
         dest = LP_DIR / 'motion_extractor.onnx'
-        if force_mot and dest.exists():
-            try:
-                dest.unlink()
-                print(f"[downloader] Forcing re-download of motion: removed existing {dest}")
-            except Exception as e:
-                print(f"[downloader] Could not remove existing motion for force download: {e}")
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading motion extractor...')
@@ -249,8 +253,10 @@ def maybe_download() -> bool:
                     except Exception:
                         pass
                 print(f'[downloader] ✅ Downloaded: {dest}')
+                _audit('download_ok', model='motion', path=str(dest))
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download motion extractor: {e}')
+                _audit('download_error', model='motion', error=str(e))
                 success = False
         else:
             converted = _maybe_convert_opset_to_19(dest)
@@ -261,25 +267,18 @@ def maybe_download() -> bool:
                 except Exception:
                     pass
             print(f'[downloader] ✅ Motion extractor already exists: {dest}')
+            _audit('exists', model='motion', path=str(dest))
     
     # Download additional models (generator required in neural-only mode)
     generator_url = os.getenv('MIRAGE_LP_GENERATOR_URL')
-    force_gen = os.getenv('MIRAGE_FORCE_DOWNLOAD_GENERATOR', '0').lower() in ('1','true','yes','on')
     if generator_url:
         dest = LP_DIR / 'generator.onnx'
-        if force_gen and dest.exists():
-            try:
-                dest.unlink()
-                print(f"[downloader] Forcing re-download of generator: removed existing {dest}")
-            except Exception as e:
-                print(f"[downloader] Could not remove existing generator for force download: {e}")
         if not dest.exists():
             try:
                 print(f'[downloader] Downloading generator model...')
                 with _FileLock(dest):
                     if not dest.exists():
                         _download(generator_url, dest)
-                # Validate ONNX
                 if not _is_valid_onnx(dest):
                     print(f"[downloader] ❌ Generator ONNX validation failed for {generator_url}")
                     try:
@@ -288,11 +287,12 @@ def maybe_download() -> bool:
                         pass
                     raise RuntimeError('generator download invalid')
                 print(f'[downloader] ✅ Downloaded: {dest}')
+                _audit('download_ok', model='generator', path=str(dest))
             except Exception as e:
                 print(f'[downloader] ❌ Failed to download generator (required): {e}')
+                _audit('download_error', model='generator', error=str(e))
                 success = False
         else:
-            # Validate existing file
             if not _is_valid_onnx(dest):
                 try:
                     print(f"[downloader] Existing generator is invalid, removing and retrying download")
@@ -307,11 +307,14 @@ def maybe_download() -> bool:
                     if not _is_valid_onnx(dest):
                         raise RuntimeError(f'generator invalid after re-download: {generator_url}')
                     print(f'[downloader] ✅ Downloaded: {dest}')
+                    _audit('download_ok', model='generator', path=str(dest), refreshed=True)
                 except Exception as e2:
                     print(f'[downloader] ❌ Failed to refresh invalid generator: {e2}')
+                    _audit('download_error', model='generator', error=str(e2), refreshed=True)
                     success = False
             else:
                 print(f'[downloader] ✅ Generator already exists: {dest}')
+                _audit('exists', model='generator', path=str(dest))
     # Optional stitching model
     stitching_url = os.getenv('MIRAGE_LP_STITCHING_URL')
     if stitching_url:
@@ -321,8 +324,10 @@ def maybe_download() -> bool:
                 print(f'[downloader] Downloading stitching model...')
                 _download(stitching_url, dest)
                 print(f'[downloader] ✅ Downloaded: {dest}')
+                _audit('download_ok', model='stitching', path=str(dest))
             except Exception as e:
                 print(f'[downloader] ⚠️ Failed to download stitching (optional): {e}')
+                _audit('download_error', model='stitching', error=str(e))
     
     # Optional custom ops plugin for GridSample 3D used by some generator variants
     grid_plugin_url = os.getenv('MIRAGE_LP_GRID_PLUGIN_URL')
@@ -333,9 +338,12 @@ def maybe_download() -> bool:
                 print(f'[downloader] Downloading grid sample plugin...')
                 _download(grid_plugin_url, dest)
                 print(f'[downloader] ✅ Downloaded: {dest}')
+                _audit('download_ok', model='grid_plugin', path=str(dest))
             except Exception as e:
                 print(f'[downloader] ⚠️ Failed to download grid plugin (optional): {e}')
+                _audit('download_error', model='grid_plugin', error=str(e))
     
+    _audit('complete', success=success)
     return success
 
 

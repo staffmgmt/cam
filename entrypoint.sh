@@ -5,16 +5,48 @@ echo "[entrypoint] Starting Mirage container..."
 echo "[entrypoint] Python: $(python3 --version 2>&1)"
 
 MODEL_DIR="/app/models/liveportrait"
+SENTINEL="${MODEL_DIR}/.provisioned"
+AUDIT_FILE="${MODEL_DIR}/_download_audit.jsonl"
 REQ_FILES=("appearance_feature_extractor.onnx" "motion_extractor.onnx" "generator.onnx")
+DL_TAG="${MIRAGE_DL_TAG:-startup}"
 
 echo "[entrypoint] Ensuring model directory exists: ${MODEL_DIR}"
 mkdir -p "${MODEL_DIR}"
 
-if [[ "${MIRAGE_DOWNLOAD_MODELS:-1}" =~ ^(1|true|TRUE|yes|on)$ ]]; then
-  echo "[entrypoint] Running model downloader (env enabled)"
-  python3 /app/model_downloader.py || echo "[entrypoint] Downloader reported issues (continuing)"
+should_download=0
+if [[ ! -f "${SENTINEL}" ]]; then
+  should_download=1
+  echo "[entrypoint] Sentinel missing; provisioning required"
 else
-  echo "[entrypoint] Skipping model download (MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS:-unset})"
+  if [[ "${MIRAGE_PROVISION_FRESH:-0}" =~ ^(1|true|yes|on)$ ]]; then
+    echo "[entrypoint] MIRAGE_PROVISION_FRESH set; forcing fresh provisioning"
+    rm -f "${SENTINEL}" || true
+    should_download=1
+  else
+    echo "[entrypoint] Sentinel present; skipping download (idempotent)"
+    # Audit skip
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    echo "{\"ts\":\"${ts}\",\"event\":\"skip_provision\",\"tag\":\"${DL_TAG}\"}" >> "${AUDIT_FILE}" 2>/dev/null || true
+  fi
+fi
+
+if [[ $should_download -eq 1 ]]; then
+  if [[ "${MIRAGE_DOWNLOAD_MODELS:-1}" =~ ^(1|true|TRUE|yes|on)$ ]]; then
+    echo "[entrypoint] Running model downloader (provisioning)"
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    echo "{\"ts\":\"${ts}\",\"event\":\"start_provision\",\"tag\":\"${DL_TAG}\"}" >> "${AUDIT_FILE}" 2>/dev/null || true
+    if python3 /app/model_downloader.py; then
+      ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      echo "{\"ts\":\"${ts}\",\"event\":\"provision_success\",\"tag\":\"${DL_TAG}\"}" >> "${AUDIT_FILE}" 2>/dev/null || true
+      touch "${SENTINEL}" || true
+    else
+      ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      echo "{\"ts\":\"${ts}\",\"event\":\"provision_error\",\"tag\":\"${DL_TAG}\"}" >> "${AUDIT_FILE}" 2>/dev/null || true
+      echo "[entrypoint] Downloader reported issues (continuing)"
+    fi
+  else
+    echo "[entrypoint] Skipping model download (MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS:-unset})"
+  fi
 fi
 
 echo "[entrypoint] Model directory contents after download attempt:"
