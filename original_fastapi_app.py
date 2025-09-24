@@ -253,6 +253,36 @@ async def get_metrics():
     
     return base_metrics
 
+@app.get("/metrics/async")
+async def metrics_async_worker():
+    if not pipeline_initialized:
+        return {"initialized": False}
+    try:
+        stats = pipeline.get_performance_stats().get('async_worker', {})
+        last = pipeline.get_performance_stats().get('last_stage_timings', {})
+        return {"initialized": True, "async_worker": stats, "last_stage_timings": last}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/metrics/stage_histogram")
+async def metrics_stage_histogram():
+    if not pipeline_initialized:
+        return {"initialized": False}
+    try:
+        # Provide rolling latency distribution buckets for recent frame times
+        frame_times = list(pipeline.frame_times)
+        buckets = {"<50ms":0,"50-100ms":0,"100-200ms":0,"200-400ms":0,">=400ms":0}
+        for t in frame_times:
+            ms = t*1000.0
+            if ms < 50: buckets["<50ms"]+=1
+            elif ms < 100: buckets["50-100ms"]+=1
+            elif ms < 200: buckets["100-200ms"]+=1
+            elif ms < 400: buckets["200-400ms"]+=1
+            else: buckets[">=400ms"]+=1
+        return {"initialized": True, "buckets": buckets, "sample_size": len(frame_times)}
+    except Exception as e:
+        return {"error": str(e)}
+
 
 @app.get("/pipeline_status")
 async def get_pipeline_status():
@@ -370,6 +400,44 @@ async def gpu_info():
         pass
 
     return resp
+
+@app.get("/metrics/motion")
+async def metrics_motion(limit: int = 100):
+    if not pipeline_initialized:
+        return {"initialized": False}
+    try:
+        stats = pipeline.get_performance_stats()
+        motion_tail = stats.get('motion_tail', [])
+        return {"initialized": True, "count": len(motion_tail), "series": motion_tail[-limit:], "recent_avg": stats.get('async_worker', {}).get('recent_motion_avg')}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/metrics/pacing")
+async def metrics_pacing():
+    if not pipeline_initialized:
+        return {"initialized": False}
+    try:
+        stats = pipeline.get_performance_stats().get('async_worker', {})
+        return {"initialized": True, "pacing_hint": stats.get('pacing_hint'), "latency_ema_ms": stats.get('latency_ema_ms'), "dynamic_detect_interval": stats.get('dynamic_detect_interval')}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/smoothing/update")
+async def smoothing_update(params: Dict[str, float]):
+    if not pipeline_initialized:
+        raise HTTPException(status_code=400, detail="Pipeline not initialized")
+    required = ["min_cutoff", "beta", "d_cutoff"]
+    for r in required:
+        if r not in params:
+            raise HTTPException(status_code=422, detail=f"Missing parameter {r}")
+    try:
+        # Recreate filter with new params
+        from smoothing import KeypointOneEuro
+        pipeline._kp_filter = KeypointOneEuro(K=21, C=3, min_cutoff=float(params['min_cutoff']), beta=float(params['beta']), d_cutoff=float(params['d_cutoff']))
+        pipeline._prev_motion_raw = None
+        return {"status": "ok", "applied": params}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.on_event("startup")

@@ -16,6 +16,8 @@ import asyncio
 from collections import deque
 import traceback
 import os
+from alignment import align_face, gaussian_face_mask, CANONICAL_5PT
+from smoothing import KeypointOneEuro
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -338,8 +340,8 @@ class RealTimeAvatarPipeline:
         self.optimizer = None
         self.virtual_camera_manager = None
         
-        # Frame buffers for real-time processing
-        self.video_buffer = deque(maxlen=5)
+        # Frame buffers for real-time processing (single-item coalescing queue)
+        self.video_buffer = deque(maxlen=1)
         self.audio_buffer = deque(maxlen=10)
         
         # Reference frames and appearance features
@@ -367,7 +369,30 @@ class RealTimeAvatarPipeline:
         self._bbox_ema_alpha = 0.8  # higher = smoother (more inertia)
         
         self.loaded = False
-    self.initializing = False
+        self.initializing = False
+        # Async inference worker state
+        self._inference_task: Optional[asyncio.Task] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._last_generated_frame: Optional[np.ndarray] = None
+        self._last_generated_time: float = 0.0
+        self._frame_submit_count = 0
+        self._frame_process_count = 0
+        # Keypoint smoothing filter
+        self._kp_filter = KeypointOneEuro(K=21, C=3, min_cutoff=1.0, beta=0.05, d_cutoff=1.0)
+        self._prev_motion_raw = None
+        # Adaptive detection interval tracking
+        self._dynamic_detect_interval = self.config.detect_interval
+        self._recent_motion_magnitudes = deque(maxlen=30)
+        self._consecutive_detect_fail = 0
+    # Extended motion history for metrics
+    self._motion_history = deque(maxlen=300)
+    # Latency histogram snapshots (long window)
+    self._latency_history = deque(maxlen=500)
+    self._latency_hist_snapshots = []  # list of {timestamp, buckets}
+    # Frame pacing
+    self._pacing_hint = 1.0  # multiplier suggestion (1.0 = normal)
+    self._target_frame_time = 1.0 / max(self.config.target_fps, 1)
+    self._latency_ema = None
         
     async def initialize(self):
         """Initialize all models"""
@@ -465,6 +490,15 @@ class RealTimeAvatarPipeline:
                     logger.warning(f"Post-init reference extraction failed: {e}")
                 mode = "liveportrait"
                 logger.info(f"Avatar pipeline initialized successfully (mode={mode})")
+                # Launch background inference worker
+                try:
+                    if self._loop is None:
+                        self._loop = asyncio.get_running_loop()
+                    if self._inference_task is None or self._inference_task.done():
+                        self._inference_task = self._loop.create_task(self._inference_worker())
+                        logger.info("Async inference worker started")
+                except Exception as e:
+                    logger.warning(f"Could not start inference worker: {e}")
                 self.initializing = False
                 return True
             else:
@@ -494,15 +528,39 @@ class RealTimeAvatarPipeline:
                 logger.error("No face detected in reference image")
                 return False
             best_face = self.scrfd_detector.get_best_face(faces)
-            aligned_face = self.scrfd_detector.crop_and_align_face(frame, best_face, target_size=(512, 512))
-            if aligned_face is None:
-                logger.error("Failed to align reference face")
-                return False
-            frame = aligned_face
+            # Use alignment utilities with 5-point landmarks for canonical transform instead of naive crop
+            try:
+                landmarks = best_face['landmarks'].astype(np.float32)
+                if landmarks.shape[0] == 5:
+                    align_res = align_face(frame, landmarks, target_size=512, canonical_template=CANONICAL_5PT)
+                    frame = align_res['aligned_image']
+                    self._ref_align = align_res  # store full alignment data
+                    logger.info("Reference frame aligned via similarity transform")
+                else:
+                    logger.warning(f"Unexpected landmark count {landmarks.shape[0]}, falling back to bbox crop")
+                    aligned_face = self.scrfd_detector.crop_and_align_face(frame, best_face, target_size=(512, 512))
+                    if aligned_face is None:
+                        logger.error("Failed to align reference face (fallback)")
+                        return False
+                    frame = aligned_face
+                    self._ref_align = None
+            except Exception as e:
+                logger.warning(f"Alignment failed, using fallback crop: {e}")
+                aligned_face = self.scrfd_detector.crop_and_align_face(frame, best_face, target_size=(512, 512))
+                if aligned_face is None:
+                    logger.error("Failed to align reference face (fallback)")
+                    return False
+                frame = aligned_face
+                self._ref_align = None
             self._last_bbox = best_face['bbox'].astype(np.float32)
             
             # Store reference frame
             self.reference_frame = frame.copy()
+            # Precompute soft face mask in canonical space for compositing later
+            try:
+                self._face_mask = gaussian_face_mask(size=frame.shape[0])  # assume square
+            except Exception:
+                self._face_mask = None
             
             # Extract appearance features (required)
             if not (self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready):
@@ -521,73 +579,17 @@ class RealTimeAvatarPipeline:
             return False
     
     def process_video_frame(self, frame: np.ndarray, frame_idx: int) -> np.ndarray:
-        """Process single video frame for real-time animation"""
-        start_time = time.time()
-        
+        """Enqueue frame for async processing; return last generated frame if available."""
         try:
-            # Check if we have a reference
-            if self.reference_frame is None:
-                logger.error("No reference set")
-                try:
-                    self.last_method = 'no_reference'
-                except Exception:
-                    pass
-                return frame
-            
-            # LivePortrait neural animation (only path)
-            if (
-                self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready
-                and getattr(self.liveportrait_engine, 'generator_session', None) is not None
-                and self.reference_appearance_features is not None
-            ):
-                try:
-                    # Detect and align face for motion extraction with simple EMA smoothing
-                    driving_frame = frame
-                    faces = self.scrfd_detector.detect_faces(frame) if (self.frame_times.__len__() % self.config.detect_interval == 0 or self._last_bbox is None) else []
-                    if faces:
-                        best_face = self.scrfd_detector.get_best_face(faces)
-                        bbox = best_face['bbox'].astype(np.float32)
-                        if self._last_bbox is not None:
-                            a = self._bbox_ema_alpha
-                            self._last_bbox = a * self._last_bbox + (1.0 - a) * bbox
-                        else:
-                            self._last_bbox = bbox
-                    if self._last_bbox is not None:
-                        # Use smoothed bbox to crop
-                        fake_face = {'bbox': self._last_bbox.astype(int), 'landmarks': None, 'confidence': 1.0}
-                        aligned_face = self.scrfd_detector.crop_and_align_face(frame, fake_face, target_size=(512, 512))
-                        if aligned_face is not None:
-                            driving_frame = aligned_face
-                    
-                    # Generate animated frame using LivePortrait
-                    animated_frame = self.liveportrait_engine.animate_frame(driving_frame)
-                    
-                    if animated_frame is not None:
-                        # Resize to match input frame size
-                        if animated_frame.shape[:2] != frame.shape[:2]:
-                            animated_frame = cv2.resize(animated_frame, (frame.shape[1], frame.shape[0]))
-                        # Track method
-                        try:
-                            self.last_method = 'liveportrait'
-                        except Exception:
-                            pass
-                        self._update_stats("liveportrait", start_time)
-                        return animated_frame
-                    else:
-                        logger.error("LivePortrait animation returned None")
-                        
-                except Exception as e:
-                    logger.error(f"LivePortrait animation error: {e}")
-                return frame
-            # If we reach here, neural path could not produce an output for this frame
-            try:
-                self.last_method = 'liveportrait_error'
-            except Exception:
-                pass
+            self._frame_submit_count += 1
+            if self.video_buffer:
+                self.video_buffer.clear()
+            self.video_buffer.append((frame.copy(), time.time()))
+            if self._last_generated_frame is not None:
+                return self._last_generated_frame
             return frame
-                
         except Exception as e:
-            logger.error(f"Video frame processing error: {e}")
+            logger.error(f"Frame enqueue error: {e}")
             return frame
     
     def _update_stats(self, method: str, start_time: float = None):
@@ -650,6 +652,21 @@ class RealTimeAvatarPipeline:
             if self.liveportrait_engine:
                 lp_stats = self.liveportrait_engine.get_performance_stats()
                 stats["liveportrait"] = lp_stats
+            # Async worker stats
+            stats["async_worker"] = {
+                "frame_submitted": self._frame_submit_count,
+                "frame_processed": self._frame_process_count,
+                "dynamic_detect_interval": self._dynamic_detect_interval,
+                "recent_motion_avg": float(np.mean(self._recent_motion_magnitudes)) if self._recent_motion_magnitudes else None,
+                "consecutive_detect_fail": self._consecutive_detect_fail,
+                "pacing_hint": self._pacing_hint,
+                "latency_ema_ms": self._latency_ema * 1000.0 if self._latency_ema is not None else None,
+            }
+            if hasattr(self, 'last_stage_timings'):
+                stats['last_stage_timings'] = self.last_stage_timings
+            stats['latency_histogram_snapshots'] = self._latency_hist_snapshots[-5:]
+            # Provide a trimmed motion tail
+            stats['motion_tail'] = list(self._motion_history)[-25:]
             # Last method used (if tracked)
             if hasattr(self, 'last_method'):
                 stats["last_method"] = getattr(self, 'last_method')
@@ -659,6 +676,146 @@ class RealTimeAvatarPipeline:
         except Exception as e:
             logger.error(f"Error getting performance stats: {e}")
             return {"error": str(e), "loaded": False}
+
+    async def _inference_worker(self):
+        """Background asynchronous inference loop processing latest video frame only."""
+        logger.info("Inference worker started")
+        while True:
+            try:
+                if not self.video_buffer or self.reference_frame is None:
+                    await asyncio.sleep(0.005)
+                    continue
+                frame, ts = self.video_buffer.pop()
+                start = time.time()
+                stage_timings: Dict[str, float] = {}
+                if not (
+                    self.use_liveportrait and self.liveportrait_engine and self.liveportrait_ready and self.reference_appearance_features is not None and getattr(self.liveportrait_engine, 'generator_session', None) is not None
+                ):
+                    self._last_generated_frame = frame
+                    continue
+                # Decide detection
+                need_detect = (self._frame_process_count % self._dynamic_detect_interval == 0) or (self._last_bbox is None)
+                faces = []
+                if need_detect:
+                    t0 = time.time()
+                    faces = self.scrfd_detector.detect_faces(frame)
+                    stage_timings['detect'] = time.time() - t0
+                    if not faces:
+                        self._consecutive_detect_fail += 1
+                    else:
+                        self._consecutive_detect_fail = 0
+                # Adaptive logic
+                if self._consecutive_detect_fail >= 3:
+                    self._dynamic_detect_interval = max(1, self._dynamic_detect_interval - 1)
+                elif len(self._recent_motion_magnitudes) >= 10:
+                    avg_motion = float(np.mean(self._recent_motion_magnitudes))
+                    if avg_motion < 0.02:
+                        self._dynamic_detect_interval = min(12, self._dynamic_detect_interval + 1)
+                    elif avg_motion > 0.08:
+                        self._dynamic_detect_interval = max(2, self._dynamic_detect_interval - 1)
+                driving_frame = frame
+                best_face = None
+                if faces:
+                    best_face = self.scrfd_detector.get_best_face(faces)
+                    bbox = best_face['bbox'].astype(np.float32)
+                    if self._last_bbox is not None:
+                        a = self._bbox_ema_alpha
+                        self._last_bbox = a * self._last_bbox + (1 - a) * bbox
+                    else:
+                        self._last_bbox = bbox
+                t_align = time.time()
+                if best_face is not None and best_face.get('landmarks') is not None:
+                    try:
+                        landmarks = best_face['landmarks'].astype(np.float32)
+                        if landmarks.shape[0] == 5:
+                            d_align = align_face(frame, landmarks, target_size=512, canonical_template=CANONICAL_5PT)
+                            driving_frame = d_align['aligned_image']
+                            self._driving_align = d_align
+                        else:
+                            raise ValueError('Unexpected landmark count')
+                    except Exception:
+                        fake_face = {'bbox': self._last_bbox.astype(int), 'landmarks': None, 'confidence': 1.0}
+                        aligned_face = self.scrfd_detector.crop_and_align_face(frame, fake_face, target_size=(512, 512))
+                        if aligned_face is not None:
+                            driving_frame = aligned_face
+                elif self._last_bbox is not None:
+                    fake_face = {'bbox': self._last_bbox.astype(int), 'landmarks': None, 'confidence': 1.0}
+                    aligned_face = self.scrfd_detector.crop_and_align_face(frame, fake_face, target_size=(512, 512))
+                    if aligned_face is not None:
+                        driving_frame = aligned_face
+                stage_timings['align'] = time.time() - t_align
+                # Motion & generator
+                t_motion = time.time()
+                motion_raw = self.liveportrait_engine.extract_motion_parameters(driving_frame)
+                motion_smoothed = motion_raw
+                if isinstance(motion_raw, np.ndarray) and motion_raw.ndim == 3:
+                    if self._prev_motion_raw is not None and self._prev_motion_raw.shape == motion_raw.shape:
+                        diff = motion_raw - self._prev_motion_raw
+                        mag = float(np.mean(np.linalg.norm(diff[..., :2], axis=-1)))
+                        self._recent_motion_magnitudes.append(mag)
+                        self._motion_history.append((time.time(), mag))
+                    self._prev_motion_raw = motion_raw.copy()
+                    motion_smoothed = self._kp_filter.filter(motion_raw, time.time())
+                animated_frame = None
+                try:
+                    animated_frame = self.liveportrait_engine.synthesize_frame(self.reference_appearance_features, motion_smoothed)
+                except Exception as se:
+                    logger.error(f"Synthesis error: {se}")
+                stage_timings['motion+gen'] = time.time() - t_motion
+                # Composite
+                t_comp = time.time()
+                if animated_frame is not None and hasattr(self, '_ref_align') and self._ref_align is not None:
+                    try:
+                        M_inv = self._ref_align.get('M_inv') if isinstance(self._ref_align, dict) else None
+                        if M_inv is not None:
+                            h0, w0 = frame.shape[:2]
+                            warped_face = cv2.warpAffine(animated_frame, M_inv, (w0, h0), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+                            if getattr(self, '_face_mask', None) is not None:
+                                mask = self._face_mask
+                                mask_warp = cv2.warpAffine(mask, M_inv, (w0, h0), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                                mask_warp = mask_warp[..., None]
+                                animated_frame = (warped_face.astype(np.float32) * mask_warp + frame.astype(np.float32) * (1 - mask_warp)).astype(np.uint8)
+                    except Exception as ce:
+                        logger.debug(f"Compositing skipped: {ce}")
+                stage_timings['composite'] = time.time() - t_comp
+                out_frame = animated_frame if animated_frame is not None else frame
+                if out_frame.shape[:2] != frame.shape[:2]:
+                    out_frame = cv2.resize(out_frame, (frame.shape[1], frame.shape[0]))
+                self._last_generated_frame = out_frame
+                self._last_generated_time = time.time()
+                stage_timings['total'] = self._last_generated_time - start
+                self.last_stage_timings = stage_timings
+                # Update stats (latency curve)
+                self.frame_times.append(stage_timings['total'])
+                self._latency_history.append((self._last_generated_time, stage_timings['total']))
+                # Update pacing: exponential moving average of latency
+                lt = stage_timings['total']
+                if self._latency_ema is None:
+                    self._latency_ema = lt
+                else:
+                    self._latency_ema = 0.9 * self._latency_ema + 0.1 * lt
+                # Suggest pacing multiplier ( <1 means sender should slow )
+                if self._latency_ema > self._target_frame_time * 1.2:
+                    self._pacing_hint = max(0.5, (self._target_frame_time * 1.2) / self._latency_ema)
+                elif self._latency_ema < self._target_frame_time * 0.8:
+                    self._pacing_hint = min(1.2, (self._target_frame_time * 0.8) / max(self._latency_ema, 1e-6))
+                else:
+                    self._pacing_hint = 1.0
+                # Periodic histogram snapshot every 50 processed frames
+                if self._frame_process_count % 50 == 0 and self._frame_process_count > 0:
+                    buckets = {"<50ms":0,"50-100ms":0,"100-200ms":0,"200-400ms":0,">=400ms":0}
+                    for _, l in list(self._latency_history)[-300:]:
+                        ms = l*1000.0
+                        if ms < 50: buckets["<50ms"]+=1
+                        elif ms < 100: buckets["50-100ms"]+=1
+                        elif ms < 200: buckets["100-200ms"]+=1
+                        elif ms < 400: buckets["200-400ms"]+=1
+                        else: buckets[">=400ms"]+=1
+                    self._latency_hist_snapshots.append({"ts": self._last_generated_time, "buckets": buckets})
+                self._frame_process_count += 1
+            except Exception as e:
+                logger.error(f"Inference worker error: {e}")
+                await asyncio.sleep(0.05)
 
 
 # Singleton pipeline instance
