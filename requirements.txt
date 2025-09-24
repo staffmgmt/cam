@@ -1,21 +1,14 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-# Torch packages are installed via Dockerfile with CUDA 11.8 wheels; avoid conflicting pins here
 aiortc==1.6.0
 websockets==11.0.3
 numpy==1.24.4
 opencv-python==4.8.1.78
 Pillow==10.0.1
-librosa==0.10.1
-soundfile==0.12.1
 insightface==0.7.3
-transformers==4.44.2
-onnx==1.16.1
-# ORT GPU pinned to a CUDA 11.x-friendly build (supports opset 20). 1.18.1 has CUDA 12 wheels too; ensure Docker CUDA base matches.
-onnxruntime-gpu==1.18.1
-onnxruntime-extensions==0.12.0
-huggingface-hub==0.24.5
+basicsr==1.4.2
+timm==0.9.12
 python-multipart==0.0.9
 av==11.0.0
 psutil==5.9.8
-mediapipe==0.10.7
+huggingface-hub==0.24.5

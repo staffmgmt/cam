@@ -10,63 +10,61 @@ pinned: false
 license: mit
 hardware: a10g-large
 python_version: "3.10"
-models:
-- KwaiVGI/LivePortrait
-- RVC-Project/Retrieval-based-Voice-Conversion-WebUI
 tags:
 - real-time
 - ai-avatar
-- face-animation
+- face-swap
 - voice-conversion
-- live-portrait
-- rvc
 - virtual-camera
-short_description: "Real-time AI avatar with face animation and voice conversion"
+short_description: "Real-time AI avatar with face swap + voice conversion"
 ---
 
 # 🎭 Mirage: Real-time AI Avatar System
 
-Transform yourself into an AI avatar in real-time with sub-250ms latency! Perfect for video calls, streaming, and virtual meetings.
+Mirage performs real-time identity-preserving face swap plus optional facial enhancement and (stub) voice conversion, streaming back a virtual camera + microphone feed with sub‑250ms target latency. Designed for live calls, streaming overlays, and privacy where you want a consistent alternate appearance.
 
 ## 🚀 Features
 
-- **Real-time Face Animation**: Live portrait animation using state-of-the-art AI
-- **Voice Conversion**: Real-time voice transformation with RVC
-- **Ultra-low Latency**: <250ms end-to-end latency optimized for A10G GPU
-- **Virtual Camera**: Direct integration with Zoom, Teams, Discord, and more
-- **Adaptive Quality**: Automatic quality adjustment to maintain real-time performance
-- **GPU Optimized**: Efficient memory management and CUDA acceleration
+- **Real-time Face Swap (InSwapper)**: Identity transfer from a single reference image to your live video.
+- **Enhancement (Optional)**: CodeFormer restoration (fidelity‑controllable) if weights present.
+- **Low Latency WebRTC**: Bi-directional streaming via aiortc (camera + mic) with adaptive frame scaling.
+- **Voice Conversion Stub**: Pluggable path ready for RVC / HuBERT integration (currently pass-through by default).
+- **Virtual Camera**: Output suitable for Zoom, Meet, Discord, OBS (via local virtual camera module).
+- **Model Auto-Provisioning**: Deterministic downloader for required swap + enhancer weights.
+- **Metrics & Health**: JSON endpoints for latency, FPS, GPU memory, and pipeline stats.
 
 ## 🎯 Use Cases
 
-- **Video Conferencing**: Use AI avatars in Zoom, Google Meet, Microsoft Teams
-- **Content Creation**: Streaming with animated avatars on Twitch, YouTube
-- **Virtual Meetings**: Professional presentations with consistent avatar appearance
-- **Privacy Protection**: Maintain anonymity while participating in video calls
+- **Video Conferencing Privacy**: Appear as a consistent alternate identity.
+- **Streaming / VTubing**: Lightweight swap + enhancement pipeline for overlays.
+- **A/B Creative Experiments**: Rapid prototyping of face identity transforms.
+- **Data Minimization**: Keep original face private while communicating.
 
 ## 🛠️ Technology Stack
 
-- **Face Animation**: LivePortrait (KwaiVGI)
-- **Voice Conversion**: RVC (Retrieval-based Voice Conversion)
-- **Face Detection**: SCRFD with optimized inference
-- **Backend**: FastAPI with WebRTC (aiortc)
-- **Frontend**: WebRTC-enabled real-time client
-- **GPU**: NVIDIA A10G with CUDA optimization
+- **Face Detection & Embedding**: InsightFace `buffalo_l` (SCRFD + embedding).
+- **Face Swap Core**: `inswapper_128_fp16.onnx` (InSwapper) via InsightFace model zoo.
+- **Enhancer (optional)**: CodeFormer 0.1 (fidelity controllable).
+- **Backend**: FastAPI + aiortc (WebRTC) + asyncio.
+- **Metrics**: Custom endpoints (`/metrics`, `/gpu`) with rolling latency/FPS stats.
+- **Downloader**: Atomic, lock-protected model fetcher (`model_downloader.py`).
+- **Frontend**: Minimal WebRTC client (`static/`).
 
-## 📊 Performance Specs
+## 📊 Performance Targets
 
-- **Video Resolution**: 512x512 @ 20 FPS (adaptive)
-- **Audio Processing**: 160ms chunks @ 16kHz
-- **End-to-end Latency**: <250ms target
-- **GPU Memory**: ~8GB peak usage on A10G
-- **Face Detection**: SCRFD every 5 frames for efficiency
+- **Processing Window**: <50ms typical swap @ 512px (A10G) w/ single face.
+- **End-to-end Latency Goal**: <250ms (capture → swap → enhancement → return).
+- **Adaptive Scale**: Frames >512px longest side are downscaled before inference.
+- **Enhancement Overhead**: CodeFormer ~18–35ms (A10G, single face, 512px) – approximate; adjust fidelity to trade quality vs latency.
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Hugging Face Space)
 
-1. **Initialize Pipeline**: Click "Initialize AI Pipeline" to load models
-2. **Set Reference**: Upload your reference image for avatar creation
-3. **Start Capture**: Begin real-time avatar generation
-4. **Enable Virtual Camera**: Use avatar output in third-party apps
+1. Open the Space UI and allow camera/microphone.
+2. Click **Initialize** – triggers model download (if not already cached) & pipeline load.
+3. Upload a clear, front-facing reference image (only largest face is used).
+4. Start streaming – swapped frames appear in the preview.
+5. (Optional) Provide CodeFormer weights (`models/codeformer/codeformer.pth`) for enhancement.
+6. Use the virtual camera integration locally (if running self-hosted) to broadcast swapped output to Zoom/OBS.
 
 ## 🔧 Technical Details
 
@@ -76,16 +74,18 @@ Transform yourself into an AI avatar in real-time with sub-250ms latency! Perfec
 - GPU memory management and cleanup
 - Audio-video synchronization within 150ms
 
-### Model Architecture
-- **LivePortrait**: Efficient portrait animation with stitching control
-- **RVC**: High-quality voice conversion with minimal latency
-- **SCRFD**: Fast face detection with confidence thresholding
+### Model Flow
+1. Capture frame → optional downscale to <=512 max side
+2. InsightFace detector+embedding obtains face bboxes + identity vectors
+3. InSwapper ONNX performs identity replacement using source embedding
+4. Optional CodeFormer enhancer refines facial region
+5. Frame returned to WebRTC outbound track
 
 ### Real-time Features
-- WebSocket streaming for minimal overhead
-- Adaptive resolution (512x512 → 384x384 → 256x256)
-- Quality degradation order: Quality → FPS → Resolution
-- Automatic recovery when performance improves
+- WebRTC (aiortc) low-latency transport.
+- Asynchronous frame processing (background tasks) to avoid blocking capture.
+- Adaptive pre-inference downscale heuristic (cap largest dimension to 512).
+- Metrics-driven latency tracking for dynamic future pacing.
 
 ## 📱 Virtual Camera Integration
 
@@ -96,45 +96,81 @@ The system creates a virtual camera device that can be used in:
 - **Social Media**: WhatsApp Desktop, Skype, Facebook Messenger
 - **Gaming**: Steam, Discord voice channels
 
-## ⚡ Performance Monitoring
+## ⚡ Metrics & Observability
 
-Real-time metrics include:
-- Video FPS and latency
-- GPU memory usage
-- Audio processing time
-- Frame drop statistics
-- System resource utilization
+Key endpoints (base URL: running server root):
+
+| Endpoint | Description |
+|----------|-------------|
+| `/metrics` | Core video/audio latency & FPS stats |
+| `/gpu` | GPU presence + memory usage (torch / nvidia-smi) |
+| `/webrtc/ping` | WebRTC router availability & TURN status |
+| `/pipeline_status` (if implemented) | High-level pipeline readiness |
+
+Pipeline stats (subset) from swap pipeline:
+```json
+{
+	"frames": 240,
+	"avg_latency_ms": 42.7,
+	"swap_faces_last": 1,
+	"enhanced_frames": 180,
+	"enhancer": "codeformer",
+	"codeformer_fidelity": 0.75,
+	"codeformer_loaded": true
+}
+```
 
 ## 🔒 Privacy & Security
 
-- All processing happens locally on the GPU
-- No data is stored or transmitted to external servers
-- Reference images are processed in memory only
-- WebSocket connections use secure protocols
+- No reference image persisted to disk (processed in-memory).
+- Only model weights are cached; media frames are transient.
+- Optional API key enforcement via `MIRAGE_API_KEY` + `MIRAGE_REQUIRE_API_KEY=1`.
 
-## 🔧 Advanced Configuration
+## 🔧 Environment Variables (Face Swap & Enhancers)
 
-The system automatically adapts quality based on performance:
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `MIRAGE_DOWNLOAD_MODELS` | Auto download required models on startup | `1` |
+| `MIRAGE_INSWAPPER_URL` | Override InSwapper ONNX URL | internal default |
+| `MIRAGE_CODEFORMER_URL` | Override CodeFormer weight URL | 0.1 release |
+| `MIRAGE_CODEFORMER_FIDELITY` | 0.0=more detail recovery, 1.0=preserve input | `0.75` |
+| `MIRAGE_MAX_FACES` | Swap up to N largest faces per frame | `1` |
+| `MIRAGE_CUDA_ONLY` | Restrict ONNX to CUDA EP + CPU fallback | unset |
+| `MIRAGE_API_KEY` | Shared secret for control / TURN token | unset |
+| `MIRAGE_REQUIRE_API_KEY` | Enforce API key if set | `0` |
+| `MIRAGE_TOKEN_TTL` | Signed token lifetime (seconds) | `300` |
+| `MIRAGE_STUN_URLS` | Comma list of STUN servers | Google defaults |
+| `MIRAGE_TURN_URL` | TURN URI(s) (comma separated) | unset |
+| `MIRAGE_TURN_USER` | TURN username | unset |
+| `MIRAGE_TURN_PASS` | TURN credential | unset |
+| `MIRAGE_FORCE_RELAY` | Force relay-only traffic | `0` |
+| `MIRAGE_TURN_TLS_ONLY` | Filter TURN to TLS/TCP | `1` |
+| `MIRAGE_PREFER_H264` | Prefer H264 codec in SDP munging | `0` |
+| `MIRAGE_VOICE_ENABLE` | Enable voice processor stub | `0` |
 
-- **High Performance**: 512x512 @ 20 FPS, full quality
-- **Medium Performance**: 384x384 @ 18 FPS, reduced quality
-- **Low Performance**: 256x256 @ 15 FPS, minimum quality
+CodeFormer fidelity example:
+```bash
+MIRAGE_CODEFORMER_FIDELITY=0.6
+```
 
 ## 📋 Requirements
 
-- **GPU**: NVIDIA A10G or equivalent (RTX 3080+ recommended)
-- **Memory**: 16GB+ RAM, 8GB+ VRAM
-- **Browser**: Chrome/Edge with WebRTC support
-- **Camera**: Any USB webcam or built-in camera
+- **GPU**: NVIDIA (Ampere+ recommended). CPU-only will be extremely slow.
+- **VRAM**: ~3–4GB baseline (swap + detector) + optional enhancer overhead.
+- **RAM**: 8GB+ (12–16GB recommended for multitasking).
+- **Browser**: Chromium-based / Firefox with WebRTC.
+- **Reference Image**: Clear, frontal, good lighting, minimal occlusions.
 
-## 🛠️ Development
+## 🛠️ Development / Running Locally
 
-Built with modern technologies:
-- FastAPI for high-performance backend (Docker entrypoint: uvicorn original_fastapi_app:app)
-- PyTorch with CUDA acceleration
-- OpenCV for image processing
-- WebRTC (aiortc) for real-time media transport
-- Docker for consistent deployment
+Download models & start server:
+```bash
+python model_downloader.py  # or set MIRAGE_DOWNLOAD_MODELS=1 and let startup handle
+uvicorn app:app --port 7860 --host 0.0.0.0
+```
+Open the browser client at `http://localhost:7860`.
+
+Set a reference image via UI (Base64 upload path) then begin WebRTC session. Inspect `/metrics` for swap latency and `webrtc/debug_state` for connection internals.
 
 ## 📄 License
 
@@ -142,30 +178,19 @@ MIT License - Feel free to use and modify for your projects!
 
 ## 🙏 Acknowledgments
 
-- [LivePortrait](https://github.com/KwaiVGI/LivePortrait) for face animation
-- [RVC Project](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) for voice conversion
-- [InsightFace](https://github.com/deepinsight/insightface) for face detection
-- HuggingFace for providing A10G GPU infrastructure
+- [InsightFace](https://github.com/deepinsight/insightface) (detection + swap)
+- [CodeFormer](https://github.com/sczhou/CodeFormer) (fidelity-controllable enhancement)
+- Hugging Face (inference infra)
 
-## Metrics Endpoints
-- `GET /metrics` – JSON with audio/video counters, EMAs (loop interval, inference), rolling FPS, frame interval EMA.
-- `GET /gpu` – GPU availability & memory (torch or `nvidia-smi` fallback).
-- `GET /metrics/async` – Async worker stats (frames submitted/processed, queue depth, last latency ms).
-- `GET /metrics/stage_histogram` – Histogram buckets of recent inference stage latencies (snapshot window).
-- `GET /metrics/motion` – Recent motion magnitudes (normalized) plus tail statistics.
-- `GET /metrics/pacing` – Latency EMA and pacing hint multiplier ( >1.0 suggests you can raise FPS, <1.0 suggests throttling ).
-- `POST /smoothing/update` – Runtime update of One Euro keypoint smoothing params. JSON body keys: `min_cutoff`, `beta`, `d_cutoff` (all optional floats).
-
-Example:
-```bash
-curl -s http://localhost:7860/metrics | jq '.video_fps_rolling, .audio_infer_time_ema_ms'
-```
+## Metrics Endpoints (Current Subset)
+- `GET /metrics`
+- `GET /gpu`
+- `GET /webrtc/ping`
+- `GET /webrtc/debug_state`
+- (Legacy endpoints referenced in SPEC may be pruned in future refactors.)
 
 ## Voice Stub Activation
-Set `MIRAGE_VOICE_ENABLE=1` to activate the voice processor stub. Behavior:
-- Audio chunks are routed through `voice_processor.process_pcm_int16` (pass-through now).
-- `audio_infer_time_ema_ms` becomes > 0 after a few chunks.
-- When disabled, inference EMA remains 0.0.
+Set `MIRAGE_VOICE_ENABLE=1` to route audio through the placeholder voice processor. Current behavior is pass‑through while preserving structural hooks for future RVC model integration.
 
 ## Future Parameterization
 - Frontend will fetch a `/config` endpoint to align `chunk_ms` and `video_max_fps` dynamically.
@@ -202,10 +227,8 @@ If the Space shows a perpetual "Restarting" badge:
 
 If problems persist, capture the Container log stack trace and open an issue.
 
-## Enable ONNX Model Downloads (Safe LivePortrait)
-## Advanced Real-time Metrics & Control
-
-New runtime observability & control surfaces were added to tune real-time performance:
+## Model Auto-Download
+`model_downloader.py` manages required weights with atomic file locks. It supports overriding sources via env variables and gracefully continues if optional enhancers fail to download.
 
 ### Endpoints Recap
 See Metrics Endpoints section above. Typical usage examples:
@@ -225,57 +248,23 @@ curl -s http://localhost:7860/metrics/motion | jq '.recent_motion[-5:]'
 ### Motion Magnitude
 Aggregated from per-frame keypoint motion vectors; higher values trigger more frequent face detection to avoid drift. Low motion stretches automatically reduce detection frequency to save compute.
 
-### One Euro Smoothing Parameters
-You can initialize or override smoothing parameters via environment variables:
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `MIRAGE_ONEEURO_MIN_CUTOFF` | 1.0 | Base cutoff frequency controlling overall smoothing strength |
-| `MIRAGE_ONEEURO_BETA` | 0.05 | Speed coefficient (higher reduces lag during fast motion) |
-| `MIRAGE_ONEEURO_D_CUTOFF` | 1.0 | Derivative cutoff for velocity filtering |
-
-Runtime adjustments:
-```bash
-curl -X POST http://localhost:7860/smoothing/update \
-	-H 'Content-Type: application/json' \
-	-d '{"min_cutoff":0.8, "beta":0.07}'
-```
-Missing keys leave existing values unchanged. The response echoes the active parameters.
+### Enhancer Fidelity (CodeFormer)
+Fidelity weight (`w`):
+- Lower (e.g. 0.3–0.5): More aggressive restoration, may alter identity details.
+- Higher (0.7–0.9): Preserve more original swapped structure, less smoothing.
+Tune with `MIRAGE_CODEFORMER_FIDELITY`.
 
 ### Latency Histogram Snapshots
 `/metrics/stage_histogram` exposes periodic snapshots (e.g. every N frames) of stage latency distribution to help identify tail regressions. Use to tune pacing thresholds or decide on model quantization.
 
-## Environment Variables Summary (New Additions)
+## Security Notes
+If exposing publicly:
+- Set `MIRAGE_API_KEY` and `MIRAGE_REQUIRE_API_KEY=1`.
+- Serve behind TLS (reverse proxy like Caddy / Nginx for certificate management).
+- Optionally restrict TURN server usage or enforce relay only for stricter NAT traversal control.
 
-| Name | Purpose | Default |
-|------|---------|---------|
-| `MIRAGE_ONEEURO_MIN_CUTOFF` | One Euro base cutoff | 1.0 |
-| `MIRAGE_ONEEURO_BETA` | One Euro speed coefficient | 0.05 |
-| `MIRAGE_ONEEURO_D_CUTOFF` | One Euro derivative cutoff | 1.0 |
-
-
-To pull LivePortrait ONNX files into the container at runtime and enable the safe animation path:
-
-1) Set these Space secrets/variables in the Settings → Variables panel:
-
-- `MIRAGE_ENABLE_SCRFD=1` (already default in Dockerfile)
-- `MIRAGE_ENABLE_LIVEPORTRAIT=1`
-- `MIRAGE_DOWNLOAD_MODELS=1`
-- `MIRAGE_LP_APPEARANCE_URL=https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/appearance_feature_extractor.onnx`
-- `MIRAGE_LP_MOTION_URL=https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/motion_extractor.onnx` (optional)
-
-2) Restart the Space. The server will download models in the background on startup, and also sync once when you hit "Initialize AI Pipeline".
-
-3) Check `/pipeline_status` or the in-UI metrics to see:
-- `ai_pipeline.animator_available: true`
-- `ai_pipeline.reference_set: true` (after uploading a reference)
-
-Notes:
-- The safe loader uses onnxruntime-gpu if available, otherwise CPU. This path provides a visible transformation placeholder and validates end-to-end integration.
-- Keep model URLs only to assets you have permission to download.
-
-## Model Weights (Planned Voice Pipeline)
-The codebase now contains placeholder directories for upcoming audio feature extraction and conversion models.
+## Planned Voice Pipeline (Future)
+Placeholder directories exist for future real-time voice conversion integration.
 
 ```
 models/

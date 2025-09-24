@@ -1,18 +1,20 @@
-"""
-Optional model downloader for deterministic builds.
-- Controlled with env MIRAGE_DOWNLOAD_MODELS=1
-- LivePortrait ONNX URLs controlled via env:
-    * MIRAGE_LP_APPEARANCE_URL
-    * MIRAGE_LP_MOTION_URL (required for motion)
-    * MIRAGE_LP_GENERATOR_URL (optional; enables full neural synthesis)
-    * MIRAGE_LP_STITCHING_URL (optional; some pipelines include extra stitching stage)
-- InsightFace models will still use the package cache; SCRFD will populate on first run.
+"""Model downloader for face swap stack (InSwapper + CodeFormer).
 
-More robust with retries and alternative download methods (requests, huggingface_hub).
+Environment:
+    MIRAGE_DOWNLOAD_MODELS=1|0
+    MIRAGE_INSWAPPER_URL  (default HF inswapper 128)
+    MIRAGE_CODEFORMER_URL (default CodeFormer official release)
+
+Models are stored under:
+    models/inswapper/inswapper_128_fp16.onnx
+    models/codeformer/codeformer.pth
+
+Download priority: requests -> huggingface_hub heuristic. Safe across parallel processes via file locks.
 """
 import os
 import sys
 import shutil
+import json
 from pathlib import Path
 import time
 from typing import Optional
@@ -39,7 +41,8 @@ try:
 except Exception:
         hf_hub_download = None
 
-LP_DIR = Path(__file__).parent / 'models' / 'liveportrait'
+INSWAPPER_DIR = Path(__file__).parent / 'models' / 'inswapper'
+CODEFORMER_DIR = Path(__file__).parent / 'models' / 'codeformer'
 HF_HOME = Path(os.getenv('HF_HOME', Path(__file__).parent / '.cache' / 'huggingface'))
 HF_HOME.mkdir(parents=True, exist_ok=True)
 
@@ -177,9 +180,9 @@ class _FileLock:
 
 def _audit(event: str, **extra):
     try:
-        lp_dir = LP_DIR
-        lp_dir.mkdir(parents=True, exist_ok=True)
-        audit_path = lp_dir / '_download_audit.jsonl'
+        audit_dir = Path(__file__).parent / 'models' / '_logs'
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_path = audit_dir / 'download_audit.jsonl'
         payload = {
             'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'event': event,
@@ -193,166 +196,60 @@ def _audit(event: str, **extra):
 
 
 def maybe_download() -> bool:
-    if os.getenv('MIRAGE_DOWNLOAD_MODELS', '1').lower() not in ('1', 'true', 'yes', 'on'):
+    if os.getenv('MIRAGE_DOWNLOAD_MODELS', '1').lower() not in ('1','true','yes','on'):
         print('[downloader] MIRAGE_DOWNLOAD_MODELS disabled')
         _audit('disabled')
         return False
-
-    app_url = os.getenv('MIRAGE_LP_APPEARANCE_URL')
-    motion_url = os.getenv('MIRAGE_LP_MOTION_URL')
-    success = True
     _audit('start')
-    
-    # Download LivePortrait appearance extractor
-    if app_url:
-        dest = LP_DIR / 'appearance_feature_extractor.onnx'
-        if not dest.exists():
-            try:
-                print(f'[downloader] Downloading appearance extractor...')
-                with _FileLock(dest):
-                    if not dest.exists():
-                        _download(app_url, dest)
-                converted = _maybe_convert_opset_to_19(dest)
-                if converted != dest:
-                    try:
-                        shutil.copyfile(converted, dest)
-                        print(f"[downloader] Replaced appearance with opset19: {converted.name}")
-                    except Exception:
-                        pass
-                print(f'[downloader] ✅ Downloaded: {dest}')
-                _audit('download_ok', model='appearance', path=str(dest))
-            except Exception as e:
-                print(f'[downloader] ❌ Failed to download appearance extractor: {e}')
-                _audit('download_error', model='appearance', error=str(e))
-                success = False
-        else:
-            converted = _maybe_convert_opset_to_19(dest)
-            if converted != dest:
-                try:
-                    shutil.copyfile(converted, dest)
-                    print(f"[downloader] Updated cached appearance to opset19")
-                except Exception:
-                    pass
-            print(f'[downloader] ✅ Appearance extractor already exists: {dest}')
-            _audit('exists', model='appearance', path=str(dest))
-    
-    # Download LivePortrait motion extractor
-    if motion_url:
-        dest = LP_DIR / 'motion_extractor.onnx'
-        if not dest.exists():
-            try:
-                print(f'[downloader] Downloading motion extractor...')
-                with _FileLock(dest):
-                    if not dest.exists():
-                        _download(motion_url, dest)
-                converted = _maybe_convert_opset_to_19(dest)
-                if converted != dest:
-                    try:
-                        shutil.copyfile(converted, dest)
-                        print(f"[downloader] Replaced motion with opset19: {converted.name}")
-                    except Exception:
-                        pass
-                print(f'[downloader] ✅ Downloaded: {dest}')
-                _audit('download_ok', model='motion', path=str(dest))
-            except Exception as e:
-                print(f'[downloader] ❌ Failed to download motion extractor: {e}')
-                _audit('download_error', model='motion', error=str(e))
-                success = False
-        else:
-            converted = _maybe_convert_opset_to_19(dest)
-            if converted != dest:
-                try:
-                    shutil.copyfile(converted, dest)
-                    print(f"[downloader] Updated cached motion to opset19")
-                except Exception:
-                    pass
-            print(f'[downloader] ✅ Motion extractor already exists: {dest}')
-            _audit('exists', model='motion', path=str(dest))
-    
-    # Download additional models (generator required in neural-only mode)
-    generator_url = os.getenv('MIRAGE_LP_GENERATOR_URL')
-    if generator_url:
-        dest = LP_DIR / 'generator.onnx'
-        if not dest.exists():
-            try:
-                print(f'[downloader] Downloading generator model...')
-                with _FileLock(dest):
-                    if not dest.exists():
-                        _download(generator_url, dest)
-                if not _is_valid_onnx(dest):
-                    print(f"[downloader] ❌ Generator ONNX validation failed for {generator_url}")
-                    try:
-                        dest.unlink()
-                    except Exception:
-                        pass
-                    raise RuntimeError('generator download invalid')
-                print(f'[downloader] ✅ Downloaded: {dest}')
-                _audit('download_ok', model='generator', path=str(dest))
-            except Exception as e:
-                print(f'[downloader] ❌ Failed to download generator (required): {e}')
-                _audit('download_error', model='generator', error=str(e))
-                success = False
-        else:
-            if not _is_valid_onnx(dest):
-                try:
-                    print(f"[downloader] Existing generator is invalid, removing and retrying download")
-                    dest.unlink()
-                except Exception:
-                    pass
-                try:
-                    print(f'[downloader] Downloading generator model...')
-                    with _FileLock(dest):
-                        if not dest.exists():
-                            _download(generator_url, dest)
-                    if not _is_valid_onnx(dest):
-                        raise RuntimeError(f'generator invalid after re-download: {generator_url}')
-                    print(f'[downloader] ✅ Downloaded: {dest}')
-                    _audit('download_ok', model='generator', path=str(dest), refreshed=True)
-                except Exception as e2:
-                    print(f'[downloader] ❌ Failed to refresh invalid generator: {e2}')
-                    _audit('download_error', model='generator', error=str(e2), refreshed=True)
-                    success = False
-            else:
-                print(f'[downloader] ✅ Generator already exists: {dest}')
-                _audit('exists', model='generator', path=str(dest))
-    # Optional stitching model
-    stitching_url = os.getenv('MIRAGE_LP_STITCHING_URL')
-    if stitching_url:
-        dest = LP_DIR / 'stitching.onnx'
-        if not dest.exists():
-            try:
-                print(f'[downloader] Downloading stitching model...')
-                _download(stitching_url, dest)
-                print(f'[downloader] ✅ Downloaded: {dest}')
-                _audit('download_ok', model='stitching', path=str(dest))
-            except Exception as e:
-                print(f'[downloader] ⚠️ Failed to download stitching (optional): {e}')
-                _audit('download_error', model='stitching', error=str(e))
-    
-    # Optional custom ops plugin for GridSample 3D used by some generator variants
-    grid_plugin_url = os.getenv('MIRAGE_LP_GRID_PLUGIN_URL')
-    if grid_plugin_url:
-        dest = LP_DIR / 'libgrid_sample_3d_plugin.so'
-        if not dest.exists():
-            try:
-                print(f'[downloader] Downloading grid sample plugin...')
-                _download(grid_plugin_url, dest)
-                print(f'[downloader] ✅ Downloaded: {dest}')
-                _audit('download_ok', model='grid_plugin', path=str(dest))
-            except Exception as e:
-                print(f'[downloader] ⚠️ Failed to download grid plugin (optional): {e}')
-                _audit('download_error', model='grid_plugin', error=str(e))
-    
+    success = True
+
+    inswapper_url = os.getenv('MIRAGE_INSWAPPER_URL', 'https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128_fp16.onnx')
+    codeformer_url = os.getenv('MIRAGE_CODEFORMER_URL', 'https://github.com/TencentARC/CodeFormer/releases/download/v0.1.0/codeformer.pth')
+
+    # InSwapper
+    inswapper_dest = INSWAPPER_DIR / 'inswapper_128_fp16.onnx'
+    if not inswapper_dest.exists():
+        try:
+            print('[downloader] Downloading InSwapper model...')
+            with _FileLock(inswapper_dest):
+                if not inswapper_dest.exists():
+                    _download(inswapper_url, inswapper_dest)
+            print(f'[downloader] ✅ InSwapper ready: {inswapper_dest}')
+            _audit('download_ok', model='inswapper', path=str(inswapper_dest))
+        except Exception as e:
+            print(f'[downloader] ❌ InSwapper download failed: {e}')
+            _audit('download_error', model='inswapper', error=str(e))
+            success = False
+    else:
+        print(f'[downloader] ✅ InSwapper exists: {inswapper_dest}')
+        _audit('exists', model='inswapper', path=str(inswapper_dest))
+
+    # CodeFormer (optional)
+    codef_dest = CODEFORMER_DIR / 'codeformer.pth'
+    if not codef_dest.exists():
+        try:
+            print('[downloader] Downloading CodeFormer model...')
+            with _FileLock(codef_dest):
+                if not codef_dest.exists():
+                    _download(codeformer_url, codef_dest)
+            print(f'[downloader] ✅ CodeFormer ready: {codef_dest}')
+            _audit('download_ok', model='codeformer', path=str(codef_dest))
+        except Exception as e:
+            print(f'[downloader] ⚠️ CodeFormer download failed (continuing): {e}')
+            _audit('download_error', model='codeformer', error=str(e))
+    else:
+        print(f'[downloader] ✅ CodeFormer exists: {codef_dest}')
+        _audit('exists', model='codeformer', path=str(codef_dest))
+
     _audit('complete', success=success)
     return success
 
 
 if __name__ == '__main__':
-    """Direct execution for debugging"""
-    print("=== LivePortrait Model Downloader ===")
-    success = maybe_download()
-    if success:
-        print("✅ All required models downloaded successfully")
+    print("=== Model Downloader (InSwapper + CodeFormer) ===")
+    ok = maybe_download()
+    if ok:
+        print("✅ All required models downloaded successfully (some optional)")
     else:
-        print("❌ Some model downloads failed")
+        print("❌ Some required model downloads failed")
         sys.exit(1)

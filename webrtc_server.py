@@ -66,8 +66,7 @@ class _PassThroughPipeline:
     def initialize(self):
         return True
 
-    def set_reference_frame(self, img):
-        # No-op reference; return False to indicate not used
+    def set_source_image(self, img):
         return False
 
     def process_video_frame(self, img, frame_idx=None):
@@ -86,10 +85,10 @@ def get_pipeline():  # type: ignore
     if _pipeline_singleton is not None:
         return _pipeline_singleton
     try:
-        from avatar_pipeline import get_pipeline as _real_get_pipeline
+        from swap_pipeline import get_pipeline as _real_get_pipeline
         _pipeline_singleton = _real_get_pipeline()
     except Exception as e:
-        logger.error(f"avatar_pipeline unavailable, using pass-through: {e}")
+        logger.error(f"swap_pipeline unavailable, using pass-through: {e}")
         _pipeline_singleton = _PassThroughPipeline()
     return _pipeline_singleton
 

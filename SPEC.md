@@ -1,3 +1,44 @@
+## Architectural Reassessment (September 2025)
+
+The initial implementation adopted a motion-driven portrait reenactment stack (LivePortrait ONNX models + custom alignment & smoothing) which is misaligned with the updated product goal: low-latency real-time face swapping with optional enhancement.
+
+### Misalignment Summary
+
+| Target Need | LivePortrait Path | Impact |
+|-------------|-------------------|--------|
+| Direct identity substitution | Motion reenactment of a canonicalized reference | Unnecessary motion keypoint pipeline |
+| Minimal per-frame latency (<80ms) | ~500–600ms generator stages logged | Fails real-time threshold |
+| Simple detector→swap flow | Multi-stage appearance + motion + generator | Complexity & fragile compositing |
+| Artifact cleanup (optional) | No enhancement stage | Lower visual fidelity |
+| Multi-face capability | Single-face canonical reenactment focus | Limits scalability |
+
+### New Model Stack
+1. Detector / embeddings: insightface FaceAnalysis (buffalo_l pack → SCRFD_10G_KPS + recognition)
+2. Swapper: inswapper_128_fp16.onnx
+3. Enhancement (optional):
+  - CodeFormer (codeformer.pth) for fidelity‑controllable restoration
+
+### New Processing Loop
+1. Capture frame
+2. Detect faces (FaceAnalysis)
+3. For each target face (top-N): apply InSwapper with pre-extracted source identity
+4. (Optional) Run CodeFormer enhancer on final composited frame (if weights present)
+5. Emit frame to WebRTC
+
+### Environment Variables (Video / Enhancer)
+| Variable | Values | Description |
+|----------|--------|-------------|
+| MIRAGE_MAX_FACES | int (default 1) | Swap up to N largest faces |
+| MIRAGE_CODEFORMER_FIDELITY | 0.0–1.0 (default 0.75) | Balance identity (1.0) vs reconstruction sharpness |
+| MIRAGE_INSWAPPER_URL | URL | Override InSwapper model source |
+| MIRAGE_CODEFORMER_URL | URL | Override CodeFormer model source |
+
+### Deprecated / To Remove
+liveportrait_engine.py, avatar_pipeline.py, alignment.py, smoothing.py, realtime_optimizer.py, virtual_camera.py (current unused), enhanced_metrics.py, landmark_reenactor.py, safe_model_integration.py, debug_mediapipe.py
+
+These abstractions are reenactment-specific (appearance feature caching, keypoint smoothing, inverse warp compositing) and will be replaced by a concise `swap_pipeline.py`.
+
+---
 ## Goals
 - End-to-end audio latency < 250 ms (capture -> inference -> playback)
 - Video pipeline: 512x512 @ ≥20 FPS target under load
