@@ -127,13 +127,21 @@ class FaceSwapPipeline:
         except Exception:
             need_clone = True
         if need_clone and os.getenv('MIRAGE_CODEFORMER_AUTOCLONE', '1').lower() in ('1','true','yes','on'):
-            repo_dir = os.path.join('third_party', 'CodeFormer')
+            # Clone into a writable path inside models (repo root may be read-only in some deploy envs)
+            repo_dir = os.getenv('MIRAGE_CODEFORMER_REPO_DIR', os.path.join('models', '_codeformer_repo'))
             if self._ensure_repo_clone(repo_dir):
                 import sys as _sys
                 if repo_dir not in _sys.path:
                     _sys.path.append(repo_dir)
+            else:
+                logger.warning('CodeFormer repo clone failed; enhancement disabled')
+                return
             try:
                 from codeformer.archs.codeformer_arch import CodeFormer  # type: ignore
+            except ModuleNotFoundError as e:
+                # Likely missing dependencies such as facexlib / basicsr
+                logger.warning(f"CodeFormer module import still failing after clone (dependency missing?): {e}")
+                return
             except Exception as e:  # still failing
                 logger.warning(f"CodeFormer module import failed after clone attempt: {e}")
                 return
@@ -143,6 +151,11 @@ class FaceSwapPipeline:
             # Basicsr usually present (in requirements); if not, can't proceed
             logger.warning('basicsr not available; skipping CodeFormer')
             return
+        # facexlib is required for some preprocessing utilities; warn if absent (not fatal for direct arch usage)
+        try:  # pragma: no cover
+            import facexlib  # type: ignore  # noqa: F401
+        except Exception:
+            logger.info('facexlib not installed; continuing (may reduce CodeFormer effectiveness)')
         try:
             import torch
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
