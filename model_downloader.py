@@ -253,6 +253,8 @@ def maybe_download() -> bool:
         codeformer_urls.append(codeformer_primary)
     # Official release (redirect sometimes), plus fallback community mirrors (replace if license requires)
     codeformer_urls.extend([
+        # GitHub release asset (preferred explicit version pin)
+        'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth',
         'https://huggingface.co/sczhou/CodeFormer/resolve/main/codeformer.pth',
         'https://huggingface.co/lllyasviel/CodeFormer/resolve/main/codeformer.pth',
     ])
