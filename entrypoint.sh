@@ -93,4 +93,4 @@ if [[ $MISSING -eq 1 ]]; then
 fi
 
 echo "[entrypoint] Launching uvicorn..."
-exec uvicorn original_fastapi_app:app --host 0.0.0.0 --port "${PORT:-7860}" --no-server-header
+exec uvicorn app:app --host 0.0.0.0 --port "${PORT:-7860}" --no-server-header

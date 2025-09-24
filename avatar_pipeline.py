@@ -744,6 +744,7 @@ class RealTimeAvatarPipeline:
                         aligned_face = self.scrfd_detector.crop_and_align_face(frame, fake_face, target_size=(512, 512))
                         if aligned_face is not None:
                             driving_frame = aligned_face
+                        stats['last_composite_method'] = getattr(self, 'last_method', None)
                 elif self._last_bbox is not None:
                     fake_face = {'bbox': self._last_bbox.astype(int), 'landmarks': None, 'confidence': 1.0}
                     aligned_face = self.scrfd_detector.crop_and_align_face(frame, fake_face, target_size=(512, 512))
@@ -770,19 +771,64 @@ class RealTimeAvatarPipeline:
                 stage_timings['motion+gen'] = time.time() - t_motion
                 # Composite
                 t_comp = time.time()
-                if animated_frame is not None and hasattr(self, '_ref_align') and self._ref_align is not None:
-                    try:
-                        M_inv = self._ref_align.get('M_inv') if isinstance(self._ref_align, dict) else None
-                        if M_inv is not None:
+                # --- Improved compositing ---
+                # Generator output is in canonical space. To map back to original driving frame coordinates
+                # we must use the DRIVING alignment inverse (M_inv) – not the reference alignment.
+                # Fallback order: driving alignment -> reference alignment -> direct resize.
+                try:
+                    composite_method = 'neural_raw_resize'
+                    if animated_frame is not None:
+                        comp_align = getattr(self, '_driving_align', None)
+                        if comp_align is None:
+                            # last resort use reference alignment (less accurate, may yield weak mask coverage)
+                            comp_align = getattr(self, '_ref_align', None)
+                        if isinstance(comp_align, dict) and comp_align.get('M_inv') is not None:
+                            M_inv = comp_align['M_inv']
                             h0, w0 = frame.shape[:2]
-                            warped_face = cv2.warpAffine(animated_frame, M_inv, (w0, h0), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-                            if getattr(self, '_face_mask', None) is not None:
-                                mask = self._face_mask
-                                mask_warp = cv2.warpAffine(mask, M_inv, (w0, h0), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                mask_warp = mask_warp[..., None]
-                                animated_frame = (warped_face.astype(np.float32) * mask_warp + frame.astype(np.float32) * (1 - mask_warp)).astype(np.uint8)
-                    except Exception as ce:
-                        logger.debug(f"Compositing skipped: {ce}")
+                            warped_face = cv2.warpAffine(
+                                animated_frame, M_inv, (w0, h0), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+                            )
+                            mask_src = getattr(self, '_face_mask', None)
+                            if mask_src is not None and mask_src.ndim == 2:
+                                mask_warp = cv2.warpAffine(
+                                    mask_src, M_inv, (w0, h0), flags=cv2.INTER_LINEAR,
+                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0
+                                )
+                                # Evaluate mask coverage; if too small or too large it likely misaligned.
+                                coverage = float(np.sum(mask_warp > 0.05)) / float(w0 * h0)
+                                if 0.01 < coverage < 0.9:
+                                    mask_warp_3 = mask_warp[..., None]
+                                    comp = (
+                                        warped_face.astype(np.float32) * mask_warp_3 +
+                                        frame.astype(np.float32) * (1 - mask_warp_3)
+                                    ).astype(np.uint8)
+                                    animated_frame = comp
+                                    composite_method = 'neural_composite'
+                                else:
+                                    # Coverage suspicious – fallback
+                                    composite_method = 'neural_raw_resize'
+                            else:
+                                # No mask available, just take warped face
+                                animated_frame = warped_face
+                                composite_method = 'neural_warp_nomask'
+                        # Optional debug overlay
+                        if os.getenv('MIRAGE_COMPOSITE_DEBUG', '0').lower() in ('1','true','yes','on') and animated_frame is not None:
+                            try:
+                                cv2.putText(
+                                    animated_frame,
+                                    composite_method,
+                                    (10, 30),
+                                    cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8,
+                                    (0, 255, 255),
+                                    2,
+                                    cv2.LINE_AA
+                                )
+                            except Exception:
+                                pass
+                        self.last_method = composite_method
+                except Exception as ce:  # pragma: no cover
+                    logger.debug(f"Compositing skipped: {ce}")
                 stage_timings['composite'] = time.time() - t_comp
                 out_frame = animated_frame if animated_frame is not None else frame
                 if out_frame.shape[:2] != frame.shape[:2]:

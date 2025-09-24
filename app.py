@@ -1,167 +1,152 @@
-#!/usr/bin/env python3
-"""
-Streamlined Gradio interface for Mirage AI Avatar System
-Optimized for HuggingFace Spaces deployment
-"""
-import gradio as gr
-import numpy as np
-import cv2
-import torch
-import os
-import sys
-from pathlib import Path
-import logging
-import asyncio
-from typing import Optional
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class MirageAvatarDemo:
-    """Simplified demo interface for HuggingFace Spaces"""
-    
-    def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.pipeline_loaded = False
-        logger.info(f"Using device: {self.device}")
-        
-    def load_models(self):
-        """Lazy loading of AI models"""
-        if self.pipeline_loaded:
-            return "Models already loaded"
-            
-        try:
-            # This will be called only when actually needed
-            logger.info("Loading AI models...")
-            
-            # For now, just simulate loading
-            # In production, load actual models here
-            import time
-            time.sleep(2)  # Simulate loading time
-            
-            self.pipeline_loaded = True
-            return "✅ AI Pipeline loaded successfully!"
-            
-        except Exception as e:
-            logger.error(f"Model loading failed: {e}")
-            return f"❌ Failed to load models: {str(e)}"
-    
-    def process_avatar(self, image, audio=None):
-        """Process image/audio for avatar generation"""
-        if not self.pipeline_loaded:
-            return None, "⚠️ Please initialize the pipeline first"
-            
-        if image is None:
-            return None, "❌ Please provide an input image"
-            
-        try:
-            # For demo purposes, just return the input image
-            # In production, this would run the full AI pipeline
-            logger.info("Processing avatar...")
-            
-            # Simple demo processing
-            processed_image = image.copy()
-            
-            return processed_image, "✅ Avatar processed successfully!"
-            
-        except Exception as e:
-            logger.error(f"Processing failed: {e}")
-            return None, f"❌ Processing failed: {str(e)}"
-
-# Initialize the demo
 demo_instance = MirageAvatarDemo()
+"""Unified FastAPI application for Mirage system (face swap pipeline).
 
-def initialize_pipeline():
-    """Initialize the AI pipeline"""
-    return demo_instance.load_models()
+All obsolete LivePortrait / reenactment / Gradio demo code removed.
+This file supersedes original_fastapi_app.py and prior app.py stub.
+"""
+from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import os
+import cv2
+import numpy as np
+from typing import Any, Dict
+from metrics import metrics as _metrics_singleton, Metrics
+from config import config
+from voice_processor import voice_processor
+from swap_pipeline import get_pipeline
 
-def generate_avatar(image, audio):
-    """Generate avatar from input"""
-    return demo_instance.process_avatar(image, audio)
+app = FastAPI(title="Mirage Real-time AI Avatar System")
 
-# Create Gradio interface
-def create_interface():
-    """Create the Gradio interface"""
-    
-    with gr.Blocks(
-        title="Mirage AI Avatar System",
-        theme=gr.themes.Soft(primary_hue="blue")
-    ) as interface:
-        
-        gr.Markdown("# 🎭 Mirage Real-time AI Avatar")
-        gr.Markdown("Transform your appearance and voice in real-time using AI")
-        
-        with gr.Row():
-            with gr.Column():
-                gr.Markdown("## Setup")
-                init_btn = gr.Button("🚀 Initialize AI Pipeline", variant="primary")
-                init_status = gr.Textbox(label="Status", interactive=False)
-                
-                gr.Markdown("## Input")
-                input_image = gr.Image(
-                    label="Reference Image", 
-                    type="numpy",
-                    height=300
-                )
-                input_audio = gr.Audio(
-                    label="Voice Sample (Optional)", 
-                    type="filepath"
-                )
-                
-                process_btn = gr.Button("✨ Generate Avatar", variant="secondary")
-            
-            with gr.Column():
-                gr.Markdown("## Output")
-                output_image = gr.Image(
-                    label="Avatar Output", 
-                    type="numpy",
-                    height=300
-                )
-                output_status = gr.Textbox(label="Processing Status", interactive=False)
-                
-                gr.Markdown("## System Info")
-                device_info = gr.Textbox(
-                    label="Device", 
-                    value=f"{'🚀 GPU (CUDA)' if torch.cuda.is_available() else '🖥️ CPU'}", 
-                    interactive=False
-                )
-        
-        gr.Markdown("""
-        ### 📋 Instructions
-        1. Click "Initialize AI Pipeline" to load the models
-        2. Upload a reference image (your face)
-        3. Optionally provide a voice sample for voice conversion
-        4. Click "Generate Avatar" to process
-        
-        ### ⚙️ Technical Details
-        This demo showcases the Mirage AI Avatar system, which combines:
-        - **Face Detection**: SCRFD for real-time face detection
-        - **Animation**: LivePortrait for facial animation
-        - **Voice Conversion**: RVC for voice transformation
-        - **Real-time Processing**: Optimized for <250ms latency
-        """)
-        
-        # Event handlers
-        init_btn.click(
-            fn=initialize_pipeline,
-            inputs=[],
-            outputs=[init_status]
-        )
-        
-        process_btn.click(
-            fn=generate_avatar,
-            inputs=[input_image, input_audio],
-            outputs=[output_image, output_status]
-        )
-    
-    return interface
+pipeline = get_pipeline()
+pipeline_initialized = False
 
-# Launch the interface
+if config.metrics_fps_window != 30:
+    metrics = Metrics(fps_window=config.metrics_fps_window)
+else:
+    metrics = _metrics_singleton
+
+static_dir = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+WEBRTC_ROUTER_LOADED = False
+WEBRTC_IMPORT_ERROR = None
+try:
+    from webrtc_server import router as webrtc_router  # type: ignore
+    app.include_router(webrtc_router)
+    WEBRTC_ROUTER_LOADED = True
+except Exception as e:  # pragma: no cover
+    WEBRTC_IMPORT_ERROR = str(e)
+    from fastapi import HTTPException as _HTTPException
+
+    @app.get("/webrtc/token")
+    async def _fallback_token():  # type: ignore[override]
+        raise _HTTPException(status_code=503, detail=f"WebRTC unavailable: {WEBRTC_IMPORT_ERROR or 'router not loaded'}")
+
+    @app.post("/webrtc/offer")
+    async def _fallback_offer():  # type: ignore[override]
+        raise _HTTPException(status_code=503, detail=f"WebRTC unavailable: {WEBRTC_IMPORT_ERROR or 'router not loaded'}")
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    index_path = static_dir / "index.html"
+    try:
+        content = index_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        content = "<html><body><h1>Mirage AI Avatar System</h1><p>FastAPI unified app.</p></body></html>"
+    return HTMLResponse(content)
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "system": "real-time-ai-avatar",
+        "pipeline_loaded": pipeline_initialized,
+        "gpu_available": pipeline.app is not None,  # coarse indicator
+        "webrtc_router_loaded": WEBRTC_ROUTER_LOADED,
+        "webrtc_import_error": WEBRTC_IMPORT_ERROR,
+    }
+
+
+@app.post("/initialize")
+async def initialize_pipeline():
+    global pipeline_initialized
+    if pipeline_initialized:
+        return {"status": "already_initialized"}
+    try:
+        ok = pipeline.initialize()
+        pipeline_initialized = ok
+        return {"status": "success" if ok else "error"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/set_reference")
+async def set_reference_image(file: UploadFile = File(...)):
+    global pipeline_initialized
+    try:
+        contents = await file.read()
+        import cv2, numpy as _np
+        arr = _np.frombuffer(contents, _np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            raise HTTPException(status_code=400, detail="Invalid image")
+        if not pipeline_initialized:
+            pipeline.set_source_image(frame)
+            return {"status": "queued"}
+        ok = pipeline.set_source_image(frame)
+        return {"status": "success" if ok else "error"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/metrics")
+async def get_metrics():
+    snap = metrics.snapshot()
+    if pipeline_initialized:
+        snap["ai_pipeline"] = pipeline.get_stats()
+    return snap
+
+
+@app.get("/pipeline_status")
+async def pipeline_status():
+    if not pipeline_initialized:
+        return {"initialized": False}
+    return {"initialized": True, "stats": pipeline.get_stats(), "source_set": pipeline.source_face is not None}
+
+
+@app.get("/gpu")
+async def gpu():
+    # Minimal GPU presence check
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            return {"available": True, "name": torch.cuda.get_device_name(0)}
+    except Exception:
+        pass
+    return {"available": False}
+
+
+@app.get("/debug/models")
+async def debug_models():
+    root = Path(__file__).parent / 'models'
+    ins = root / 'inswapper' / 'inswapper_128_fp16.onnx'
+    codef = root / 'codeformer' / 'codeformer.pth'
+    return {
+        'inswapper': {'exists': ins.exists(), 'size': ins.stat().st_size if ins.exists() else 0},
+        'codeformer': {'exists': codef.exists(), 'size': codef.stat().st_size if codef.exists() else 0},
+        'pipeline_initialized': pipeline_initialized
+    }
+
+
+@app.on_event("startup")
+async def startup_log():
+    print("[startup] unified app starting")
+
+
 if __name__ == "__main__":
-    interface = create_interface()
-    interface.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False
-    )
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=7860)
