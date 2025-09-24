@@ -424,12 +424,22 @@ class IncomingVideoTrack(MediaStreamTrack):
         # Use last processed if available, else pass-through
         async with self._lock:
             processed = self._last_processed if self._last_processed is not None else img
-            logger.info(f"Frame {self.frame_id}: using {'processed' if self._last_processed is not None else 'passthrough'} frame, shape: {processed.shape}")
-        # Convert back to VideoFrame
-        new_frame = frame.from_ndarray(processed, format="bgr24")
-        new_frame.pts = frame.pts
-        new_frame.time_base = frame.time_base
-        return new_frame
+            mode = 'processed' if self._last_processed is not None else 'passthrough'
+        logger.info(f"Frame {self.frame_id}: using {mode} frame, shape: {processed.shape}")
+
+        # Rebase timestamps to a clean monotonic sequence to avoid decoder stall if processing lagged
+        import av as _av
+        vframe = _av.VideoFrame.from_ndarray(processed, format="bgr24")
+        # Provide new pts/time_base using VideoStreamTrack helper (borrow from OutboundVideoTrack semantics)
+        try:
+            pts, time_base = await OutboundVideoTrack().next_timestamp()  # ephemeral instance just for sequencing
+            vframe.pts = pts
+            vframe.time_base = time_base
+        except Exception:
+            # Fallback to original timing
+            vframe.pts = frame.pts
+            vframe.time_base = frame.time_base
+        return vframe
 
 
 class OutboundVideoTrack(VideoStreamTrack):
@@ -447,6 +457,8 @@ class OutboundVideoTrack(VideoStreamTrack):
         self._last_ts = time.time()
         self._frame_count = 0
         self._debug_emitted = 0
+        self._placeholder_sent = 0
+        self._placeholder_until = time.time() + 5.0  # send placeholder frames up to 5s until source yields processed frames
 
     def set_source(self, track: MediaStreamTrack):
         self._source = track
@@ -456,13 +468,19 @@ class OutboundVideoTrack(VideoStreamTrack):
         if src is not None:
             try:
                 f = await src.recv()
+                # Detect if frame is still a raw passthrough sized frame (heuristic: placeholder period or frame_count==0)
                 self._frame_count += 1
                 self._debug_emitted += 1
+                if (self._frame_count % 30) == 0:
+                    try:
+                        logger.info(f"OutboundVideoTrack relayed frame {self._frame_count} size={getattr(f, 'width', '?')}x{getattr(f, 'height', '?')}")
+                    except Exception:
+                        pass
                 return f
             except Exception:
                 # fall back to black frame if source errors
                 pass
-        # generate black frame at target fps
+        # generate black/diagnostic placeholder frame at target fps (early stage before processed frames ready)
         now = time.time()
         delay = self._frame_interval - (now - self._last_ts)
         if delay > 0:
@@ -470,6 +488,7 @@ class OutboundVideoTrack(VideoStreamTrack):
         self._last_ts = time.time()
         # Diagnostic test pattern: color bars + moving square + frame counter
         frame = np.zeros((self._height, self._width, 3), dtype=np.uint8)
+        placeholder_active = (self._source is None) or (time.time() < self._placeholder_until)
         try:
             # Color bars
             num_bars = 6
@@ -486,14 +505,15 @@ class OutboundVideoTrack(VideoStreamTrack):
                 x0 = i*bar_w
                 x1 = self._width if i==num_bars-1 else (i+1)*bar_w
                 frame[:, x0:x1] = colors[i]
-            # Moving square
-            t = int(time.time()*2)  # moves every 0.5s
-            sq = max(10, min(self._height, self._width)//8)
-            x = (t*15) % max(1, (self._width - sq))
-            y = (t*9) % max(1, (self._height - sq))
-            cv2.rectangle(frame, (x,y), (x+sq,y+sq), (255,255,255), thickness=-1)
+            # Moving square / indicator
+            t = int(time.time()*2)
+            sq = max(10, min(self._height, self._width)//10)
+            x = (t*25) % max(1, (self._width - sq))
+            y = (t*18) % max(1, (self._height - sq))
+            color = (255,255,255) if placeholder_active else (0,0,0)
+            cv2.rectangle(frame, (x,y), (x+sq,y+sq), color, thickness=-1)
             # Text with frame count
-            text = f"OUT {self._frame_count}"
+            text = f"OUT {self._frame_count}{' P' if placeholder_active else ''}"
             cv2.putText(frame, text, (10, self._height-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 2, cv2.LINE_AA)
             cv2.putText(frame, text, (10, self._height-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
         except Exception:
@@ -507,6 +527,18 @@ class OutboundVideoTrack(VideoStreamTrack):
         vframe.time_base = time_base
         self._frame_count += 1
         self._debug_emitted += 1
+        if placeholder_active:
+            self._placeholder_sent += 1
+            if self._placeholder_sent in (1, 10):
+                try:
+                    logger.info(f"OutboundVideoTrack placeholder frame emitted (count={self._placeholder_sent})")
+                except Exception:
+                    pass
+        if (self._frame_count % 30) == 0 and not placeholder_active:
+            try:
+                logger.info(f"OutboundVideoTrack generated pattern frame {self._frame_count} {self._width}x{self._height}")
+            except Exception:
+                pass
         return vframe
 
 

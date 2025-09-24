@@ -367,9 +367,17 @@ class RealTimeAvatarPipeline:
         self._bbox_ema_alpha = 0.8  # higher = smoother (more inertia)
         
         self.loaded = False
+    self.initializing = False
         
     async def initialize(self):
         """Initialize all models"""
+        if self.loaded:
+            logger.info("Initialize called: already loaded")
+            return {"status": "already_initialized"}
+        if self.initializing:
+            logger.info("Initialize called: initialization already in progress")
+            return {"status": "initializing"}
+        self.initializing = True
         logger.info("Initializing real-time avatar pipeline...")
         
         # Initialize SCRFD face detection (required)
@@ -378,6 +386,7 @@ class RealTimeAvatarPipeline:
             logger.info("SCRFD face detection ready")
         else:
             logger.error("SCRFD failed to load (required)")
+            self.initializing = False
             return False
         
         # Initialize LivePortrait ONNX engine (required)
@@ -445,19 +454,28 @@ class RealTimeAvatarPipeline:
                         if af is not None:
                             self.reference_appearance_features = af
                             logger.info("Post-init appearance features extracted from queued reference")
+                            # Trigger generator warmup once (safe guard)
+                            try:
+                                warm = getattr(self.liveportrait_engine, 'warmup', None)
+                                if callable(warm):
+                                    warm()
+                            except Exception:
+                                pass
                 except Exception as e:
                     logger.warning(f"Post-init reference extraction failed: {e}")
                 mode = "liveportrait"
                 logger.info(f"Avatar pipeline initialized successfully (mode={mode})")
+                self.initializing = False
                 return True
             else:
                 logger.error("Avatar pipeline initialization failed - requirements not met")
+                self.initializing = False
                 return False
                 
         except Exception as e:
             logger.error(f"Model loading failed: {e}")
-            # Still mark as loaded if we have basic functionality
             self.loaded = scrfd_ok
+            self.initializing = False
             return self.loaded
     
     def set_reference_frame(self, frame: np.ndarray) -> bool:

@@ -63,6 +63,7 @@ class LivePortraitONNX:
         
         # Performance tracking
         self.inference_times = []
+    self._did_warmup = False
         
     def _get_onnx_providers(self) -> List[str]:
         """Get optimal ONNX execution providers. Enforce GPU if required."""
@@ -342,6 +343,12 @@ class LivePortraitONNX:
                     logger.warning(f"Failed to compute source keypoints: {e}")
             
             logger.info(f"Appearance features extracted in {inference_time*1000:.1f}ms, shape: {appearance_features.shape}")
+            # Opportunistically warm up generator to avoid first-call latency spike (~18s seen)
+            try:
+                if self.generator_session is not None:
+                    self.warmup()
+            except Exception:
+                pass
             return appearance_features
             
         except Exception as e:
@@ -353,6 +360,38 @@ class LivePortraitONNX:
         if self.motion_session is None:
             logger.error("Motion model not loaded")
             return None
+
+    def warmup(self) -> bool:
+        """Run a minimal generator inference with zero motion to prime kernels and caches.
+        Returns True if a warmup run executed, else False."""
+        try:
+            if self._did_warmup:
+                return False
+            if self.generator_session is None or self.reference_appearance is None:
+                return False
+            # Build zero keypoints matching expected shape (1,21,3)
+            dummy_kp = np.zeros((1, 21, 3), dtype=np.float32)
+            feed = {}
+            try:
+                names = {i.name for i in self.generator_session.get_inputs()}
+                if 'feature_3d' in names:
+                    feed['feature_3d'] = self.reference_appearance.astype(np.float32)
+                if 'kp_driving' in names:
+                    feed['kp_driving'] = dummy_kp
+                if 'kp_source' in names:
+                    feed['kp_source'] = dummy_kp
+            except Exception:
+                return False
+            if not feed:
+                return False
+            start = time.time()
+            self.generator_session.run(None, feed)
+            logger.info(f"Generator warmup completed in {(time.time()-start)*1000.0:.1f}ms")
+            self._did_warmup = True
+            return True
+        except Exception as e:
+            logger.debug(f"Warmup skipped: {e}")
+            return False
         
         try:
             motion = self._run_motion_for_image(driving_image)
