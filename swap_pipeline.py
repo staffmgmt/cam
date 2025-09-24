@@ -8,8 +8,13 @@ import numpy as np
 import cv2
 from PIL import Image
 
-import insightface  # ensures model pack loading
-from insightface.app import FaceAnalysis
+try:
+    # Defer heavy imports; may fail if onnxruntime/torch missing
+    import insightface  # type: ignore
+    from insightface.app import FaceAnalysis  # type: ignore
+except Exception:
+    insightface = None  # type: ignore
+    FaceAnalysis = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +61,8 @@ class FaceSwapPipeline:
                 providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         except Exception:
             providers = None
+        if insightface is None or FaceAnalysis is None:
+            raise ImportError("insightface (and its deps like onnxruntime) not available. Ensure onnxruntime, onnx, torch installed.")
         self.app = FaceAnalysis(name='buffalo_l', providers=providers)
         self.app.prepare(ctx_id=0, det_size=(640,640))
         # Load swapper

@@ -12,3 +12,6 @@ python-multipart==0.0.9
 av==11.0.0
 psutil==5.9.8
 huggingface-hub==0.24.5
+onnx==1.16.1
+onnxruntime==1.17.1
+torch==2.1.2
