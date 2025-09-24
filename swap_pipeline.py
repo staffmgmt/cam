@@ -303,6 +303,9 @@ class FaceSwapPipeline:
                 logger.debug('process_frame: no faces detected in incoming frame')
             self._record_latency(time.time() - t0)
             self._stats['swap_faces_last'] = 0
+            # Count processed frame even if no faces detected
+            self._stats['frames'] += 1
+            self._frame_index += 1
             return frame
         # Sort faces by area and keep top-N
         def _area(face):
