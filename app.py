@@ -1,4 +1,3 @@
-demo_instance = MirageAvatarDemo()
 """Unified FastAPI application for Mirage system (face swap pipeline).
 
 All obsolete LivePortrait / reenactment / Gradio demo code removed.
