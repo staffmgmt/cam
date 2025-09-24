@@ -181,6 +181,20 @@ async def initialize_pipeline():
         }
 
 
+    @app.get("/debug/webrtc_config")
+    async def debug_webrtc_config():
+        """Expose selected WebRTC-related runtime configuration to assist debugging disconnections."""
+        env = os.environ
+        cfg = {
+            'force_relay_param_supported': True,
+            'MIRAGE_WEBRTC_VERBOSE': env.get('MIRAGE_WEBRTC_VERBOSE', ''),
+            'MIRAGE_WEBRTC_FORCE_RELAY': env.get('MIRAGE_WEBRTC_FORCE_RELAY', ''),
+            'MIRAGE_WEBRTC_STATS_INTERVAL': env.get('MIRAGE_WEBRTC_STATS_INTERVAL', ''),
+            'MIRAGE_DL_TAG': env.get('MIRAGE_DL_TAG', ''),
+        }
+        return cfg
+
+
 @app.post("/set_reference")
 async def set_reference_image(file: UploadFile = File(...)):
     """Set reference image for avatar.

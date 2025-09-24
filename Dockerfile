@@ -98,7 +98,10 @@ ENV HOME=/app \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH} \
     MIRAGE_ORT_DISABLE_SHAPE_INFERENCE=1 \
     MIRAGE_REQUIRE_GPU=1 \
-    MIRAGE_DL_TAG=build
+    MIRAGE_DL_TAG=build \
+    MIRAGE_WEBRTC_VERBOSE=1 \
+    MIRAGE_WEBRTC_STATS_INTERVAL=5000 \
+    MIRAGE_WEBRTC_FORCE_RELAY=0
 
 # Enforce single neural path (SCRFD + LivePortrait generator)
 ENV MIRAGE_REQUIRE_NEURAL=1

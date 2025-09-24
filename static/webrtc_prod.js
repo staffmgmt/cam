@@ -26,6 +26,68 @@
   };
   function setStatus(txt){ els.status.textContent = txt; }
   function log(...a){ console.log('[PROD]', ...a); }
+  // Verbose toggle (can be overridden by backend-provided global or URL param ?wv=1)
+  const VERBOSE = (window.MIRAGE_WEBRTC_VERBOSE === true) || (new URLSearchParams(location.search).get('wv')==='1');
+  const STATS_INTERVAL_MS = (window.MIRAGE_WEBRTC_STATS_INTERVAL_MS) || 5000;
+  let statsTimer = null;
+
+  function vlog(...args){ if(VERBOSE) console.log('[PROD][VERBOSE]', ...args); }
+
+  function attachPcDiagnostics(pc){
+    if(!pc) return;
+    const evMap = ['signalingstatechange','iceconnectionstatechange','icegatheringstatechange','connectionstatechange','negotiationneeded'];
+    evMap.forEach(ev => {
+      pc.addEventListener(ev, ()=>{ vlog('pc event', ev, diagSnapshot()); });
+    });
+    pc.addEventListener('track', ev => { vlog('pc track event', ev.track && ev.track.kind, ev.streams && ev.streams.length); });
+    pc.onicecandidate = (e)=>{ if(e.candidate){ vlog('ice candidate', e.candidate.type, e.candidate.protocol, e.candidate.address, e.candidate.relatedAddress||null); } else { vlog('ice candidate gathering complete'); } };
+  }
+
+  function diagSnapshot(){
+    if(!state.pc) return {};
+    return {
+      signaling: state.pc.signalingState,
+      iceConnection: state.pc.iceConnectionState,
+      iceGathering: state.pc.iceGatheringState,
+      connection: state.pc.connectionState,
+      localTracks: state.pc.getSenders().map(s=>({kind:s.track && s.track.kind, ready:s.track && s.track.readyState})),
+      remoteTracks: state.pc.getReceivers().map(r=>({kind:r.track && r.track.kind, ready:r.track && r.track.readyState}))
+    };
+  }
+
+  async function collectStats(){
+    if(!state.pc) return;
+    try {
+      const stats = await state.pc.getStats();
+      const summary = { ts: Date.now(), outbound: {}, inbound: {}, candidatePairs: [] };
+      stats.forEach(report => {
+        if(report.type === 'outbound-rtp' && !report.isRemote){
+          summary.outbound[report.kind||report.mediaType||'unknown'] = {
+            bitrateKbps: report.bytesSent && report.timestamp ? undefined : undefined,
+            frames: report.framesEncoded,
+            q: report.qualityLimitationReason,
+            packetsSent: report.packetsSent
+          };
+        } else if(report.type === 'inbound-rtp' && !report.isRemote){
+          summary.inbound[report.kind||report.mediaType||'unknown'] = {
+            jitter: report.jitter,
+            packetsLost: report.packetsLost,
+            frames: report.framesDecoded,
+            packetsReceived: report.packetsReceived
+          };
+        } else if(report.type === 'candidate-pair' && report.state === 'succeeded'){
+          summary.candidatePairs.push({
+            current: report.nominated,
+            bytesSent: report.bytesSent,
+            bytesReceived: report.bytesReceived,
+            rtt: report.currentRoundTripTime,
+            availableOutgoingBitrate: report.availableOutgoingBitrate
+          });
+        }
+      });
+      vlog('webrtc stats', summary);
+    } catch(e){ vlog('stats error', e); }
+  }
 
   async function handleReference(e){
     const file = e.target.files && e.target.files[0];
@@ -96,7 +158,8 @@
       } catch(_){}
       if (overrideRelay || FORCE_RELAY_URL || iceCfg.forceRelay === true) { iceCfg.iceTransportPolicy = 'relay'; }
       log('ice config', iceCfg);
-      state.pc = new RTCPeerConnection(iceCfg);
+  state.pc = new RTCPeerConnection(iceCfg);
+  attachPcDiagnostics(state.pc);
       state._usedRelay = !!iceCfg.iceTransportPolicy && iceCfg.iceTransportPolicy === 'relay';
       state._relayFallbackTried = !!overrideRelay || !!FORCE_RELAY_URL; // if already forcing relay, don't fallback again
       state.pc.oniceconnectionstatechange = ()=>{
@@ -104,16 +167,25 @@
         if(['failed','closed'].includes(state.pc.iceConnectionState)){
           if(!state.cancelled) disconnect();
         }
+        if(state.pc.iceConnectionState === 'disconnected'){
+          vlog('ICE disconnected snapshot', diagSnapshot());
+        }
       };
       state.pc.onconnectionstatechange = ()=>{
         const st = state.pc.connectionState;
         log('pc state', st);
-        // Allow transient 'disconnected' to recover; try ICE restart once
+        if(st === 'connected' && !statsTimer){
+          statsTimer = setInterval(collectStats, STATS_INTERVAL_MS);
+        }
         if(st === 'disconnected'){
-          try { state.pc.restartIce && state.pc.restartIce(); } catch(_){ }
+          vlog('PC disconnected snapshot', diagSnapshot());
+          try { state.pc.restartIce && state.pc.restartIce(); vlog('Attempted ICE restart'); } catch(_){ }
         }
         if(['failed','closed'].includes(st)){
+          if(statsTimer){ clearInterval(statsTimer); statsTimer=null; }
           const tryRelay = !state._usedRelay && !state._relayFallbackTried;
+          const snapshot = diagSnapshot();
+            vlog('Final failure snapshot', snapshot);
           disconnect().then(()=>{
             if (tryRelay) {
               state._relayFallbackTried = true;
@@ -260,6 +332,7 @@
 
   async function disconnect(){
     state.cancelled = true;
+    if(statsTimer){ clearInterval(statsTimer); statsTimer=null; }
     if(state.metricsTimer){ clearInterval(state.metricsTimer); state.metricsTimer=null; }
     if(state.control){ try { state.control.onmessage=null; state.control.close(); }catch(_){} }
     if(state.pc){ try { state.pc.ontrack=null; state.pc.onconnectionstatechange=null; state.pc.oniceconnectionstatechange=null; state.pc.onicegatheringstatechange=null; state.pc.close(); }catch(_){} }
