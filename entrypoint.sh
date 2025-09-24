@@ -4,14 +4,15 @@ set -euo pipefail
 echo "[entrypoint] Starting Mirage container..."
 echo "[entrypoint] Python: $(python3 --version 2>&1)"
 
-MODEL_DIR="/app/models/liveportrait"
-SENTINEL="${MODEL_DIR}/.provisioned"
-AUDIT_FILE="${MODEL_DIR}/_download_audit.jsonl"
-REQ_FILES=("appearance_feature_extractor.onnx" "motion_extractor.onnx" "generator.onnx")
+# Updated provisioning for face swap pipeline (InSwapper + optional CodeFormer)
+MODEL_ROOT="/app/models"
+SENTINEL="${MODEL_ROOT}/.provisioned"
+AUDIT_FILE="${MODEL_ROOT}/_download_audit.jsonl"
+REQ_FILES=("inswapper/inswapper_128_fp16.onnx")
 DL_TAG="${MIRAGE_DL_TAG:-startup}"
 
-echo "[entrypoint] Ensuring model directory exists: ${MODEL_DIR}"
-mkdir -p "${MODEL_DIR}"
+echo "[entrypoint] Ensuring model directory exists: ${MODEL_ROOT}"
+mkdir -p "${MODEL_ROOT}"
 
 should_download=0
 if [[ ! -f "${SENTINEL}" ]]; then
@@ -50,7 +51,11 @@ if [[ $should_download -eq 1 ]]; then
 fi
 
 echo "[entrypoint] Model directory contents after download attempt:"
-ls -lh "${MODEL_DIR}" || true
+ls -lh "${MODEL_ROOT}" || true
+echo "[entrypoint] InSwapper dir contents:"
+ls -lh "${MODEL_ROOT}/inswapper" 2>/dev/null || true
+echo "[entrypoint] CodeFormer dir contents:"
+ls -lh "${MODEL_ROOT}/codeformer" 2>/dev/null || true
 
 # Minimal SHA256 function (skip if file huge and hashing disabled)
 hash_file() {
@@ -71,7 +76,7 @@ hash_file() {
 
 MISSING=0
 for f in "${REQ_FILES[@]}"; do
-  path="${MODEL_DIR}/$f"
+  path="${MODEL_ROOT}/$f"
   if [[ -f "$path" ]]; then
     size=$(stat -c%s "$path" 2>/dev/null || wc -c <"$path")
     hash=$(hash_file "$path")
@@ -83,12 +88,8 @@ for f in "${REQ_FILES[@]}"; do
 done
 
 if [[ $MISSING -eq 1 ]]; then
-  if [[ ! "${MIRAGE_ALLOW_WARP_FALLBACK:-0}" =~ ^(1|true|yes|on)$ ]]; then
-    echo "[entrypoint] FATAL: Required model(s) missing and fallback not permitted. Set MIRAGE_ALLOW_WARP_FALLBACK=1 to bypass." >&2
-    exit 1
-  else
-    echo "[entrypoint] Proceeding with warp fallback (generator may be absent)." >&2
-  fi
+  echo "[entrypoint] FATAL: Required model(s) missing (InSwapper). Cannot continue." >&2
+  exit 1
 fi
 
 echo "[entrypoint] Launching uvicorn..."

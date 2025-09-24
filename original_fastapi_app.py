@@ -15,7 +15,7 @@ import hashlib
 from metrics import metrics as _metrics_singleton, Metrics
 from config import config
 from voice_processor import voice_processor
-from avatar_pipeline import get_pipeline
+from swap_pipeline import get_pipeline
 try:
     import model_downloader  # optional runtime downloader
 except Exception:
@@ -106,20 +106,18 @@ async def initialize_pipeline():
         else:
             # Provide more detail for debugging
             try:
-                stats = pipeline.get_performance_stats()
+                stats = pipeline.get_stats() if hasattr(pipeline, 'get_stats') else {}
             except Exception:
                 stats = {}
-            # Also include model file presence for quick diagnosis
-            try:
-                from pathlib import Path as _Path
-                lp_dir = _Path(__file__).parent / 'models' / 'liveportrait'
-                files = {}
-                for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx", "generator.onnx", "stitching.onnx"):
-                    p = lp_dir / name
-                    files[name] = {"exists": p.exists(), "size_bytes": p.stat().st_size if p.exists() else 0}
-                stats["model_files"] = files
-            except Exception:
-                pass
+            # Include swap model presence for diagnosis
+            from pathlib import Path as _Path
+            model_root = _Path(__file__).parent / 'models'
+            ins = model_root / 'inswapper' / 'inswapper_128_fp16.onnx'
+            codef = model_root / 'codeformer' / 'codeformer.pth'
+            stats['model_files'] = {
+                'inswapper_128_fp16.onnx': {'exists': ins.exists(), 'size_bytes': ins.stat().st_size if ins.exists() else 0},
+                'codeformer.pth': {'exists': codef.exists(), 'size_bytes': codef.stat().st_size if codef.exists() else 0}
+            }
             return {"status": "error", "message": "Failed to initialize pipeline", "details": stats}
     except Exception as e:
         return {"status": "error", "message": f"Initialization error: {str(e)}"}
@@ -246,7 +244,7 @@ async def get_metrics():
     
     # Add AI pipeline metrics if available
     if pipeline_initialized:
-        pipeline_stats = pipeline.get_performance_stats()
+        pipeline_stats = pipeline.get_stats() if hasattr(pipeline, 'get_stats') else {}
         base_metrics.update({
             "ai_pipeline": pipeline_stats
         })
@@ -258,9 +256,8 @@ async def metrics_async_worker():
     if not pipeline_initialized:
         return {"initialized": False}
     try:
-        stats = pipeline.get_performance_stats().get('async_worker', {})
-        last = pipeline.get_performance_stats().get('last_stage_timings', {})
-        return {"initialized": True, "async_worker": stats, "last_stage_timings": last}
+        stats = pipeline.get_stats() if hasattr(pipeline, 'get_stats') else {}
+        return {"initialized": True, "stats": stats}
     except Exception as e:
         return {"error": str(e)}
 
@@ -294,11 +291,11 @@ async def get_pipeline_status():
         }
     
     try:
-        stats = pipeline.get_performance_stats()
+        stats = pipeline.get_stats() if hasattr(pipeline, 'get_stats') else {}
         return {
             "initialized": True,
             "stats": stats,
-            "reference_set": pipeline.reference_frame is not None
+            "reference_set": getattr(pipeline, 'source_face', None) is not None
         }
     except Exception as e:
         return {
@@ -406,9 +403,9 @@ async def metrics_motion(limit: int = 100):
     if not pipeline_initialized:
         return {"initialized": False}
     try:
-        stats = pipeline.get_performance_stats()
-        motion_tail = stats.get('motion_tail', [])
-        return {"initialized": True, "count": len(motion_tail), "series": motion_tail[-limit:], "recent_avg": stats.get('async_worker', {}).get('recent_motion_avg')}
+        stats = pipeline.get_stats() if hasattr(pipeline, 'get_stats') else {}
+        # swap pipeline does not track motion; return latency history subset if available
+        return {"initialized": True, "avg_latency_ms": stats.get('avg_latency_ms'), "frames": stats.get('frames')}
     except Exception as e:
         return {"error": str(e)}
 
@@ -417,8 +414,8 @@ async def metrics_pacing():
     if not pipeline_initialized:
         return {"initialized": False}
     try:
-        stats = pipeline.get_performance_stats().get('async_worker', {})
-        return {"initialized": True, "pacing_hint": stats.get('pacing_hint'), "latency_ema_ms": stats.get('latency_ema_ms'), "dynamic_detect_interval": stats.get('dynamic_detect_interval')}
+        stats = pipeline.get_stats() if hasattr(pipeline, 'get_stats') else {}
+        return {"initialized": True, "avg_latency_ms": stats.get('avg_latency_ms'), "frames": stats.get('frames')}
     except Exception as e:
         return {"error": str(e)}
 
@@ -483,16 +480,18 @@ async def log_config():
 
 @app.get("/debug/models")
 async def debug_models():
-    """Return presence, sizes, optional sha256 prefixes and pipeline load status."""
+    """Report presence & size of face swap models (InSwapper + optional CodeFormer)."""
     from pathlib import Path
     import hashlib
-    lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
+    model_root = Path(__file__).parent / 'models'
+    ins = model_root / 'inswapper' / 'inswapper_128_fp16.onnx'
+    codef = model_root / 'codeformer' / 'codeformer.pth'
     files = {}
     hash_enabled = os.getenv('MIRAGE_HASH_MODELS','0').lower() in ('1','true','yes','on')
-    for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx", "generator.onnx", "stitching.onnx"):
-        p = lp_dir / name
+    for p in (ins, codef):
+        name = p.name
         info = {"exists": p.exists(), "size_bytes": p.stat().st_size if p.exists() else 0}
-        if p.exists() and hash_enabled:
+        if p.exists() and hash_enabled and p.stat().st_size < 1024*1024*200:  # hash files <200MB
             try:
                 h = hashlib.sha256()
                 with open(p, 'rb') as fh:
@@ -503,16 +502,15 @@ async def debug_models():
                 info["hash_error"] = str(e)
         files[name] = info
     try:
-        stats = pipeline.get_performance_stats()
+        stats = pipeline.get_stats() if hasattr(pipeline, 'get_stats') else {}
     except Exception as e:
         stats = {"error": str(e)}
     flags = {
         "MIRAGE_DOWNLOAD_MODELS": os.getenv("MIRAGE_DOWNLOAD_MODELS"),
-        "MIRAGE_ALLOW_WARP_FALLBACK": os.getenv("MIRAGE_ALLOW_WARP_FALLBACK"),
         "MIRAGE_HASH_MODELS": os.getenv("MIRAGE_HASH_MODELS"),
     }
-    all_required = all(files[f]["exists"] for f in ("appearance_feature_extractor.onnx","motion_extractor.onnx","generator.onnx"))
-    return {"files": files, "flags": flags, "all_required_present": all_required, "pipeline_stats": stats}
+    all_required = ins.exists()
+    return {"files": files, "flags": flags, "inswapper_present": all_required, "pipeline_stats": stats}
 
 
 # Removed /debug/download_models endpoint to avoid triggering duplicate downloads after provisioning.

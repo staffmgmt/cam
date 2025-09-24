@@ -43,6 +43,12 @@ except Exception:
 
 INSWAPPER_DIR = Path(__file__).parent / 'models' / 'inswapper'
 CODEFORMER_DIR = Path(__file__).parent / 'models' / 'codeformer'
+# Ensure base directories exist early to avoid lock file creation errors
+for _d in (INSWAPPER_DIR, CODEFORMER_DIR):
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
 HF_HOME = Path(os.getenv('HF_HOME', Path(__file__).parent / '.cache' / 'huggingface'))
 HF_HOME.mkdir(parents=True, exist_ok=True)
 
@@ -211,6 +217,7 @@ def maybe_download() -> bool:
     if not inswapper_dest.exists():
         try:
             print('[downloader] Downloading InSwapper model...')
+            inswapper_dest.parent.mkdir(parents=True, exist_ok=True)
             with _FileLock(inswapper_dest):
                 if not inswapper_dest.exists():
                     _download(inswapper_url, inswapper_dest)
@@ -229,6 +236,7 @@ def maybe_download() -> bool:
     if not codef_dest.exists():
         try:
             print('[downloader] Downloading CodeFormer model...')
+            codef_dest.parent.mkdir(parents=True, exist_ok=True)
             with _FileLock(codef_dest):
                 if not codef_dest.exists():
                     _download(codeformer_url, codef_dest)
