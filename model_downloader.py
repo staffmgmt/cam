@@ -17,7 +17,7 @@ import shutil
 import json
 from pathlib import Path
 import time
-from typing import Optional
+from typing import Optional, List
 import os
 import errno
 
@@ -61,8 +61,13 @@ def _download_requests(url: str, dest: Path, timeout: float = 30.0, retries: int
     tmp = dest.with_suffix(dest.suffix + f'.part.{os.getpid()}.{int(time.time()*1000)}')
     for attempt in range(1, retries + 1):
         try:
+            headers = {}
+            # Hugging Face token support for gated/private repos
+            hf_token = os.getenv('HF_TOKEN') or os.getenv('HUGGINGFACEHUB_API_TOKEN')
+            if hf_token and 'huggingface.co' in url:
+                headers['Authorization'] = f'Bearer {hf_token}'
             print(f"[downloader] (requests) GET {url} -> {dest} (attempt {attempt}/{retries})")
-            with requests.get(url, stream=True, timeout=timeout) as r:
+            with requests.get(url, stream=True, timeout=timeout, headers=headers) as r:
                 r.raise_for_status()
                 with open(tmp, 'wb') as f:
                     shutil.copyfileobj(r.raw, f)
@@ -136,21 +141,22 @@ def _maybe_convert_opset_to_19(path: Path) -> Path:
         print(f"[downloader] Opset conversion skipped for {path.name}: {e}")
     return path
 
-def _download(url: str, dest: Path):
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        # Ensure parent dir is writable
-        dest.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-    # Try requests first, then huggingface_hub
-    ok = _download_requests(url, dest)
-    if ok:
-        return
-    ok = _download_hf(url, dest)
-    if ok:
-        return
-    raise RuntimeError("all download methods failed")
+def _attempt_urls(urls: List[str], dest: Path) -> bool:
+    errors = []
+    for u in urls:
+        try:
+            ok = _download_requests(u, dest)
+            if ok:
+                return True
+            ok = _download_hf(u, dest)
+            if ok:
+                return True
+            errors.append(f"no handler success {u}")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{u}: {e}")
+    if errors:
+        print('[downloader] errors: ' + ' | '.join(errors))
+    return False
 
 # Simple cross-process file lock using exclusive create of a .lock file
 class _FileLock:
@@ -209,8 +215,32 @@ def maybe_download() -> bool:
     _audit('start')
     success = True
 
-    inswapper_url = os.getenv('MIRAGE_INSWAPPER_URL', 'https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128_fp16.onnx')
-    codeformer_url = os.getenv('MIRAGE_CODEFORMER_URL', 'https://github.com/TencentARC/CodeFormer/releases/download/v0.1.0/codeformer.pth')
+    inswapper_primary = os.getenv('MIRAGE_INSWAPPER_URL', '').strip()
+    codeformer_primary = os.getenv('MIRAGE_CODEFORMER_URL', '').strip()
+
+    inswapper_urls: List[str] = []
+    if inswapper_primary:
+        inswapper_urls.append(inswapper_primary)
+    # Known public mirrors / variants (fp16 and standard)
+    inswapper_urls.extend([
+        'https://huggingface.co/damo-vilab/model-zoo/resolve/main/inswapper_128.onnx',
+        'https://huggingface.co/damo-vilab/model-zoo/resolve/main/inswapper_128_fp16.onnx',
+        'https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128_fp16.onnx',
+    ])
+    # Deduplicate preserving order
+    seen = set()
+    inswapper_urls = [u for u in inswapper_urls if not (u in seen or seen.add(u))]
+
+    codeformer_urls: List[str] = []
+    if codeformer_primary:
+        codeformer_urls.append(codeformer_primary)
+    # Official release (redirect sometimes), plus fallback community mirrors (replace if license requires)
+    codeformer_urls.extend([
+        'https://huggingface.co/lllyasviel/CodeFormer/resolve/main/codeformer.pth',
+        'https://huggingface.co/sczhou/CodeFormer/resolve/main/codeformer.pth',
+    ])
+    seen2 = set()
+    codeformer_urls = [u for u in codeformer_urls if not (u in seen2 or seen2.add(u))]
 
     # InSwapper
     inswapper_dest = INSWAPPER_DIR / 'inswapper_128_fp16.onnx'
@@ -220,7 +250,8 @@ def maybe_download() -> bool:
             inswapper_dest.parent.mkdir(parents=True, exist_ok=True)
             with _FileLock(inswapper_dest):
                 if not inswapper_dest.exists():
-                    _download(inswapper_url, inswapper_dest)
+                    if not _attempt_urls(inswapper_urls, inswapper_dest):
+                        raise RuntimeError('all download methods failed')
             print(f'[downloader] ✅ InSwapper ready: {inswapper_dest}')
             _audit('download_ok', model='inswapper', path=str(inswapper_dest))
         except Exception as e:
@@ -239,7 +270,7 @@ def maybe_download() -> bool:
             codef_dest.parent.mkdir(parents=True, exist_ok=True)
             with _FileLock(codef_dest):
                 if not codef_dest.exists():
-                    _download(codeformer_url, codef_dest)
+                    _attempt_urls(codeformer_urls, codef_dest)
             print(f'[downloader] ✅ CodeFormer ready: {codef_dest}')
             _audit('download_ok', model='codeformer', path=str(codef_dest))
         except Exception as e:

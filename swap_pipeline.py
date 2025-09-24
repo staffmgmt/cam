@@ -14,6 +14,7 @@ from insightface.app import FaceAnalysis
 logger = logging.getLogger(__name__)
 
 INSWAPPER_ONNX_PATH = os.path.join('models', 'inswapper', 'inswapper_128_fp16.onnx')
+ALT_INSWAPPER_PATH = os.path.join('models', 'inswapper', 'inswapper_128.onnx')
 CODEFORMER_PATH = os.path.join('models', 'codeformer', 'codeformer.pth')
 
 class FaceSwapPipeline:
@@ -58,9 +59,13 @@ class FaceSwapPipeline:
         self.app = FaceAnalysis(name='buffalo_l', providers=providers)
         self.app.prepare(ctx_id=0, det_size=(640,640))
         # Load swapper
-        if not os.path.isfile(INSWAPPER_ONNX_PATH):
-            raise FileNotFoundError(f"Missing inswapper model at {INSWAPPER_ONNX_PATH}")
-        self.swapper = insightface.model_zoo.get_model(INSWAPPER_ONNX_PATH, providers=providers)
+        model_path = INSWAPPER_ONNX_PATH
+        if not os.path.isfile(model_path):
+            if os.path.isfile(ALT_INSWAPPER_PATH):
+                model_path = ALT_INSWAPPER_PATH
+            else:
+                raise FileNotFoundError(f"Missing InSwapper model (checked {INSWAPPER_ONNX_PATH} and {ALT_INSWAPPER_PATH})")
+        self.swapper = insightface.model_zoo.get_model(model_path, providers=providers)
         # Optional CodeFormer enhancer
         try:
             # CodeFormer dependencies
