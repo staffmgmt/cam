@@ -19,7 +19,8 @@ from swap_pipeline import get_pipeline
 app = FastAPI(title="Mirage Real-time AI Avatar System")
 
 pipeline = get_pipeline()
-pipeline_initialized = False
+# Since get_pipeline() now initializes immediately, mark initialized if pipeline.initialized True
+pipeline_initialized = getattr(pipeline, 'initialized', False)
 
 if config.metrics_fps_window != 30:
     metrics = Metrics(fps_window=config.metrics_fps_window)
@@ -85,6 +86,12 @@ async def initialize_pipeline():
 
 @app.post("/set_reference")
 async def set_reference_image(file: UploadFile = File(...)):
+    """Set (or reset) the source reference face.
+
+    Behavior:
+      - Ensures pipeline initialized (synchronous) before setting reference.
+      - Returns detailed status including number of faces detected in reference.
+    """
     global pipeline_initialized
     try:
         contents = await file.read()
@@ -93,13 +100,14 @@ async def set_reference_image(file: UploadFile = File(...)):
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if frame is None:
             raise HTTPException(status_code=400, detail="Invalid image")
-        if not pipeline_initialized:
-            pipeline.set_source_image(frame)
-            return {"status": "queued"}
+        if not pipeline_initialized or not getattr(pipeline, 'initialized', False):
+            pipeline.initialize()
+            pipeline_initialized = True
         ok = pipeline.set_source_image(frame)
-        return {"status": "success" if ok else "error"}
+        meta = getattr(pipeline, 'source_img_meta', {}) if ok else {}
+        return {"status": "success" if ok else "error", "meta": meta}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/metrics")
@@ -115,6 +123,25 @@ async def pipeline_status():
     if not pipeline_initialized:
         return {"initialized": False}
     return {"initialized": True, "stats": pipeline.get_stats(), "source_set": pipeline.source_face is not None}
+
+
+@app.get("/debug/pipeline")
+async def debug_pipeline():
+    """Return detailed pipeline diagnostics for debugging."""
+    exists = pipeline is not None
+    if not exists:
+        return {"exists": False}
+    try:
+        stats = pipeline.get_stats()
+    except Exception as e:  # pragma: no cover
+        stats = {"error": str(e)}
+    return {
+        "exists": True,
+        "initialized": getattr(pipeline, 'initialized', False),
+        "loaded": getattr(pipeline, 'loaded', False),
+        "source_set": getattr(pipeline, 'source_face', None) is not None,
+        "stats": stats,
+    }
 
 
 @app.get("/gpu")

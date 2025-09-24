@@ -18,7 +18,7 @@ Fallback: If aiortc not supported in environment or import fails, endpoint retur
 Security: (basic) Optional shared secret via X-API-Key header (env MIRAGE_API_KEY).
 
 NOTE: This is a minimal, production-ready skeleton focusing on structure, error handling,
-resource cleanup and integration points. Actual model inference remains in avatar_pipeline.
+resource cleanup and integration points. Actual model inference now resides exclusively in swap_pipeline.FaceSwapPipeline.
 """
 from __future__ import annotations
 
