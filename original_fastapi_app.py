@@ -365,34 +365,36 @@ async def log_config():
 
 @app.get("/debug/models")
 async def debug_models():
-    """Return presence and sizes for expected model files, plus loader flags."""
+    """Return presence, sizes, optional sha256 prefixes and pipeline load status."""
     from pathlib import Path
+    import hashlib
     lp_dir = Path(__file__).parent / 'models' / 'liveportrait'
     files = {}
-    try:
-        for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx", "generator.onnx", "stitching.onnx"):
-            p = lp_dir / name
-            files[name] = {
-                "exists": p.exists(),
-                "size_bytes": p.stat().st_size if p.exists() else 0,
-            }
-    except Exception:
-        pass
-    # Probe pipeline flags
+    hash_enabled = os.getenv('MIRAGE_HASH_MODELS','0').lower() in ('1','true','yes','on')
+    for name in ("appearance_feature_extractor.onnx", "motion_extractor.onnx", "generator.onnx", "stitching.onnx"):
+        p = lp_dir / name
+        info = {"exists": p.exists(), "size_bytes": p.stat().st_size if p.exists() else 0}
+        if p.exists() and hash_enabled:
+            try:
+                h = hashlib.sha256()
+                with open(p, 'rb') as fh:
+                    for chunk in iter(lambda: fh.read(1024*512), b''):
+                        h.update(chunk)
+                info["sha256"] = h.hexdigest()
+            except Exception as e:
+                info["hash_error"] = str(e)
+        files[name] = info
     try:
         stats = pipeline.get_performance_stats()
-    except Exception:
-        stats = {}
-    # Lightweight flags
+    except Exception as e:
+        stats = {"error": str(e)}
     flags = {
         "MIRAGE_DOWNLOAD_MODELS": os.getenv("MIRAGE_DOWNLOAD_MODELS"),
-        "MIRAGE_REQUIRE_NEURAL": os.getenv("MIRAGE_REQUIRE_NEURAL"),
+        "MIRAGE_ALLOW_WARP_FALLBACK": os.getenv("MIRAGE_ALLOW_WARP_FALLBACK"),
+        "MIRAGE_HASH_MODELS": os.getenv("MIRAGE_HASH_MODELS"),
     }
-    return {
-        "files": files,
-        "flags": flags,
-        "pipeline_stats": stats,
-    }
+    all_required = all(files[f]["exists"] for f in ("appearance_feature_extractor.onnx","motion_extractor.onnx","generator.onnx"))
+    return {"files": files, "flags": flags, "all_required_present": all_required, "pipeline_stats": stats}
 
 
 @app.post("/debug/download_models")

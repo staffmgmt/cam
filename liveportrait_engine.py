@@ -220,8 +220,26 @@ class LivePortraitONNX:
                 logger.error(f"Motion model not found: {self.motion_model_path}")
                 return False
             
-            # Load generator (required)
+            # Load generator (required unless explicit fallback allowed)
+            allow_fallback = os.getenv("MIRAGE_ALLOW_WARP_FALLBACK", "0").lower() in ("1","true","yes","on")
             if self.generator_model_path.exists():
+                try:
+                    g_size = self.generator_model_path.stat().st_size
+                except Exception:
+                    g_size = -1
+                # Optional hash logging (can be expensive for large files)
+                hash_val = None
+                if os.getenv("MIRAGE_HASH_MODELS", "0") in ("1","true","yes","on"):
+                    try:
+                        import hashlib
+                        h = hashlib.sha256()
+                        with open(self.generator_model_path, 'rb') as fh:
+                            for chunk in iter(lambda: fh.read(1024*1024), b''):
+                                h.update(chunk)
+                        hash_val = h.hexdigest()[:16]
+                    except Exception as e:
+                        logger.warning(f"Hashing generator failed: {e}")
+                logger.info(f"Loading generator model (no opset downgrade): {self.generator_model_path} size={g_size} hash={hash_val}")
                 # Do NOT downgrade opset for generator; rely on ORT >= 1.18 support for opset 20
                 gen_path = self.generator_model_path
                 logger.info(f"Loading generator model (no opset downgrade): {gen_path}")
@@ -264,8 +282,12 @@ class LivePortraitONNX:
                 except Exception:
                     pass
             else:
-                logger.error("LivePortrait generator.onnx not found (required)")
-                return False
+                msg = "LivePortrait generator.onnx not found"
+                if allow_fallback:
+                    logger.error(msg + " - proceeding with warp fallback (MIRAGE_ALLOW_WARP_FALLBACK=1)")
+                else:
+                    logger.error(msg + " (required; set MIRAGE_ALLOW_WARP_FALLBACK=1 to bypass)")
+                    return False
             
             logger.info("LivePortrait ONNX models loaded successfully")
             return True

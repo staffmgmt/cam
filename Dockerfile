@@ -109,5 +109,9 @@ ENV MIRAGE_REQUIRE_NEURAL=1
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD sh -c 'curl -fsS http://localhost:${PORT:-7860}/health || exit 1'
 
-# Run FastAPI app with uvicorn (WebRTC endpoints + static UI), binding to PORT
-CMD ["sh", "-c", "uvicorn original_fastapi_app:app --host 0.0.0.0 --port ${PORT:-7860}"]
+# Add entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Run via entrypoint to guarantee model provisioning & integrity checks
+CMD ["/app/entrypoint.sh"]
