@@ -124,7 +124,7 @@ class FaceSwapPipeline:
             logger.warning(f"CodeFormer init failed, disabling: {e}")
             self.codeformer = None
         self.initialized = True
-    self.loaded = True  # legacy attribute for external checks
+        self.loaded = True  # legacy attribute for external checks
         logger.info('FaceSwapPipeline initialized')
         return True
 
