@@ -90,21 +90,36 @@ def _download_hf(url: str, dest: Path) -> bool:
     if hf_hub_download is None:
         return False
     # Try to parse repo_id and filename from a typical Hugging Face URL
-    # e.g. https://huggingface.co/<repo_id>/resolve/main/<filename>
+    # Supports:
+    #   https://huggingface.co/<user>/<repo>/resolve/main/<filename>
+    #   https://huggingface.co/datasets/<user>/<repo>/resolve/main/<filename>
     try:
         from urllib.parse import urlparse
         p = urlparse(url)
         parts = [s for s in p.path.split('/') if s]
-        # Expect parts like ['<repo_user_or_org>', '<repo_name>', 'resolve', 'main', '<filename>']
-        if len(parts) >= 5 and parts[2] == 'resolve':
+        repo_id = None
+        filename = None
+        # dataset pattern
+        if len(parts) >= 6 and parts[0] == 'datasets' and parts[3] == 'resolve':
+            # datasets/<user>/<repo>/resolve/main/<filename>
+            repo_id = f"{parts[1]}/{parts[2]}"
+            filename = '/'.join(parts[5:])
+            repo_type = 'dataset'
+        # model pattern
+        elif len(parts) >= 5 and parts[2] == 'resolve':
             repo_id = f"{parts[0]}/{parts[1]}"
             filename = '/'.join(parts[4:])
+            repo_type = None
+        if repo_id and filename:
             print(f"[downloader] (hf_hub) repo={repo_id} file={filename}")
             dest.parent.mkdir(parents=True, exist_ok=True)
             # Direct huggingface cache to writable location
             os.environ.setdefault('HF_HOME', str(HF_HOME))
             os.environ.setdefault('HUGGINGFACE_HUB_CACHE', str(HF_HOME / 'hub'))
-            tmp_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=str(HF_HOME / 'hub'))
+            kwargs = { 'repo_id': repo_id, 'filename': filename, 'local_dir': str(HF_HOME / 'hub') }
+            if repo_type == 'dataset':
+                kwargs['repo_type'] = 'dataset'
+            tmp_path = hf_hub_download(**kwargs)
             shutil.copyfile(tmp_path, dest)
             return True
     except Exception as e:
@@ -222,10 +237,12 @@ def maybe_download() -> bool:
     if inswapper_primary:
         inswapper_urls.append(inswapper_primary)
     # Known public mirrors / variants (fp16 and standard)
+    # User-requested primary mirror (persistent storage dataset)
     inswapper_urls.extend([
-        'https://huggingface.co/damo-vilab/model-zoo/resolve/main/inswapper_128.onnx',
-        'https://huggingface.co/damo-vilab/model-zoo/resolve/main/inswapper_128_fp16.onnx',
+        'https://huggingface.co/datasets/Gourieff/ReActor/resolve/main/models/inswapper_128_fp16.onnx',
         'https://huggingface.co/deepinsight/inswapper/resolve/main/inswapper_128_fp16.onnx',
+        'https://huggingface.co/damo-vilab/model-zoo/resolve/main/inswapper_128_fp16.onnx',
+        'https://huggingface.co/damo-vilab/model-zoo/resolve/main/inswapper_128.onnx',
     ])
     # Deduplicate preserving order
     seen = set()
@@ -236,8 +253,8 @@ def maybe_download() -> bool:
         codeformer_urls.append(codeformer_primary)
     # Official release (redirect sometimes), plus fallback community mirrors (replace if license requires)
     codeformer_urls.extend([
-        'https://huggingface.co/lllyasviel/CodeFormer/resolve/main/codeformer.pth',
         'https://huggingface.co/sczhou/CodeFormer/resolve/main/codeformer.pth',
+        'https://huggingface.co/lllyasviel/CodeFormer/resolve/main/codeformer.pth',
     ])
     seen2 = set()
     codeformer_urls = [u for u in codeformer_urls if not (u in seen2 or seen2.add(u))]
