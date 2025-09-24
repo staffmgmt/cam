@@ -63,8 +63,8 @@ class FaceSwapPipeline:
         self.codeformer = None
         self.codeformer_fidelity = float(os.getenv('MIRAGE_CODEFORMER_FIDELITY', '0.75'))
         self.codeformer_loaded = False
-    # Debug verbosity for swap decisions
-    self.swap_debug = os.getenv('MIRAGE_SWAP_DEBUG', '0').lower() in ('1','true','yes','on')
+        # Debug verbosity for swap decisions
+        self.swap_debug = os.getenv('MIRAGE_SWAP_DEBUG', '0').lower() in ('1','true','yes','on')
 
     def initialize(self):
         if self.initialized:
