@@ -150,6 +150,11 @@ MIT License - Feel free to use and modify for your projects!
 ## Metrics Endpoints
 - `GET /metrics` – JSON with audio/video counters, EMAs (loop interval, inference), rolling FPS, frame interval EMA.
 - `GET /gpu` – GPU availability & memory (torch or `nvidia-smi` fallback).
+- `GET /metrics/async` – Async worker stats (frames submitted/processed, queue depth, last latency ms).
+- `GET /metrics/stage_histogram` – Histogram buckets of recent inference stage latencies (snapshot window).
+- `GET /metrics/motion` – Recent motion magnitudes (normalized) plus tail statistics.
+- `GET /metrics/pacing` – Latency EMA and pacing hint multiplier ( >1.0 suggests you can raise FPS, <1.0 suggests throttling ).
+- `POST /smoothing/update` – Runtime update of One Euro keypoint smoothing params. JSON body keys: `min_cutoff`, `beta`, `d_cutoff` (all optional floats).
 
 Example:
 ```bash
@@ -198,6 +203,56 @@ If the Space shows a perpetual "Restarting" badge:
 If problems persist, capture the Container log stack trace and open an issue.
 
 ## Enable ONNX Model Downloads (Safe LivePortrait)
+## Advanced Real-time Metrics & Control
+
+New runtime observability & control surfaces were added to tune real-time performance:
+
+### Endpoints Recap
+See Metrics Endpoints section above. Typical usage examples:
+
+```bash
+curl -s http://localhost:7860/metrics/async | jq
+curl -s http://localhost:7860/metrics/pacing | jq '.latency_ema_ms, .pacing_hint'
+curl -s http://localhost:7860/metrics/motion | jq '.recent_motion[-5:]'
+```
+
+### Pacing Hint Logic
+`pacing_hint` is derived from a latency exponential moving average vs target frame time:
+- ~1.0: Balanced.
+- <0.85: System overloaded – consider lowering capture FPS or resolution.
+- >1.15: Headroom available – you may increase FPS modestly.
+
+### Motion Magnitude
+Aggregated from per-frame keypoint motion vectors; higher values trigger more frequent face detection to avoid drift. Low motion stretches automatically reduce detection frequency to save compute.
+
+### One Euro Smoothing Parameters
+You can initialize or override smoothing parameters via environment variables:
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `MIRAGE_ONEEURO_MIN_CUTOFF` | 1.0 | Base cutoff frequency controlling overall smoothing strength |
+| `MIRAGE_ONEEURO_BETA` | 0.05 | Speed coefficient (higher reduces lag during fast motion) |
+| `MIRAGE_ONEEURO_D_CUTOFF` | 1.0 | Derivative cutoff for velocity filtering |
+
+Runtime adjustments:
+```bash
+curl -X POST http://localhost:7860/smoothing/update \
+	-H 'Content-Type: application/json' \
+	-d '{"min_cutoff":0.8, "beta":0.07}'
+```
+Missing keys leave existing values unchanged. The response echoes the active parameters.
+
+### Latency Histogram Snapshots
+`/metrics/stage_histogram` exposes periodic snapshots (e.g. every N frames) of stage latency distribution to help identify tail regressions. Use to tune pacing thresholds or decide on model quantization.
+
+## Environment Variables Summary (New Additions)
+
+| Name | Purpose | Default |
+|------|---------|---------|
+| `MIRAGE_ONEEURO_MIN_CUTOFF` | One Euro base cutoff | 1.0 |
+| `MIRAGE_ONEEURO_BETA` | One Euro speed coefficient | 0.05 |
+| `MIRAGE_ONEEURO_D_CUTOFF` | One Euro derivative cutoff | 1.0 |
+
 
 To pull LivePortrait ONNX files into the container at runtime and enable the safe animation path:
 

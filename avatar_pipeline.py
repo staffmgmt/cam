@@ -378,21 +378,27 @@ class RealTimeAvatarPipeline:
         self._frame_submit_count = 0
         self._frame_process_count = 0
         # Keypoint smoothing filter
-        self._kp_filter = KeypointOneEuro(K=21, C=3, min_cutoff=1.0, beta=0.05, d_cutoff=1.0)
+        try:
+            min_cut = float(os.getenv('MIRAGE_ONEEURO_MIN_CUTOFF', '1.0'))
+            beta = float(os.getenv('MIRAGE_ONEEURO_BETA', '0.05'))
+            d_cut = float(os.getenv('MIRAGE_ONEEURO_D_CUTOFF', '1.0'))
+        except Exception:
+            min_cut, beta, d_cut = 1.0, 0.05, 1.0
+        self._kp_filter = KeypointOneEuro(K=21, C=3, min_cutoff=min_cut, beta=beta, d_cutoff=d_cut)
         self._prev_motion_raw = None
         # Adaptive detection interval tracking
         self._dynamic_detect_interval = self.config.detect_interval
         self._recent_motion_magnitudes = deque(maxlen=30)
         self._consecutive_detect_fail = 0
-    # Extended motion history for metrics
-    self._motion_history = deque(maxlen=300)
-    # Latency histogram snapshots (long window)
-    self._latency_history = deque(maxlen=500)
-    self._latency_hist_snapshots = []  # list of {timestamp, buckets}
-    # Frame pacing
-    self._pacing_hint = 1.0  # multiplier suggestion (1.0 = normal)
-    self._target_frame_time = 1.0 / max(self.config.target_fps, 1)
-    self._latency_ema = None
+        # Extended motion history for metrics
+        self._motion_history = deque(maxlen=300)
+        # Latency histogram snapshots (long window)
+        self._latency_history = deque(maxlen=500)
+        self._latency_hist_snapshots = []  # list of {timestamp, buckets}
+        # Frame pacing
+        self._pacing_hint = 1.0  # multiplier suggestion (1.0 = normal)
+        self._target_frame_time = 1.0 / max(self.config.target_fps, 1)
+        self._latency_ema = None
         
     async def initialize(self):
         """Initialize all models"""

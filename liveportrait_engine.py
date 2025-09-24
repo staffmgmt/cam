@@ -63,7 +63,8 @@ class LivePortraitONNX:
         
         # Performance tracking
         self.inference_times = []
-    self._did_warmup = False
+        # Warmup sentinel
+        self._did_warmup = False
         
     def _get_onnx_providers(self) -> List[str]:
         """Get optimal ONNX execution providers. Enforce GPU if required."""
@@ -378,9 +379,29 @@ class LivePortraitONNX:
             return None
     
     def extract_motion_parameters(self, driving_image: np.ndarray) -> Optional[np.ndarray]:
-        """Extract motion parameters from driving image"""
+        """Extract motion parameters from driving image.
+        Returns keypoints/pose tensor shaped [1,K,3] if possible.
+        """
         if self.motion_session is None:
             logger.error("Motion model not loaded")
+            return None
+        try:
+            motion = self._run_motion_for_image(driving_image)
+            # Prefer explicit kp_driving from motion model if available
+            if isinstance(motion, dict):
+                kp_drive = (motion.get('kp_driving') or motion.get('driving') or
+                            motion.get('kp_drive') or motion.get('drive'))
+                if kp_drive is None:
+                    # Fallback to first ndarray value
+                    kp_drive = next((v for v in motion.values() if isinstance(v, np.ndarray)), None)
+                if kp_drive is None:
+                    logger.error("Motion model outputs did not include a usable keypoint array")
+                    return None
+                return kp_drive
+            else:
+                return motion
+        except Exception as e:
+            logger.error(f"Motion parameter extraction failed: {e}")
             return None
 
     def warmup(self) -> bool:
@@ -414,22 +435,6 @@ class LivePortraitONNX:
         except Exception as e:
             logger.debug(f"Warmup skipped: {e}")
             return False
-        
-        try:
-            motion = self._run_motion_for_image(driving_image)
-            # Prefer explicit kp_driving from motion model if available
-            if isinstance(motion, dict):
-                kp_drive = motion.get('kp_driving') or motion.get('driving')
-                if kp_drive is None:
-                    # Fallback to first array value
-                    kp_drive = next((v for v in motion.values() if isinstance(v, np.ndarray)), None)
-                return kp_drive
-            else:
-                return motion
-            
-        except Exception as e:
-            logger.error(f"Motion parameter extraction failed: {e}")
-            return None
 
     def _run_motion_for_image(self, img: np.ndarray):
         """Helper: run motion/keypoint extractor on an image and return structured outputs."""
