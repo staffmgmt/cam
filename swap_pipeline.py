@@ -63,6 +63,8 @@ class FaceSwapPipeline:
         self.codeformer = None
         self.codeformer_fidelity = float(os.getenv('MIRAGE_CODEFORMER_FIDELITY', '0.75'))
         self.codeformer_loaded = False
+    # Debug verbosity for swap decisions
+    self.swap_debug = os.getenv('MIRAGE_SWAP_DEBUG', '0').lower() in ('1','true','yes','on')
 
     def initialize(self):
         if self.initialized:
@@ -157,31 +159,40 @@ class FaceSwapPipeline:
         except Exception:
             logger.warning('Torch missing; cannot enable CodeFormer')
             return
-        # Try import; if fails attempt auto-clone
-        need_clone = False
+        # Direct import path used by upstream project (packaged when installed)
+        # Primary expected path: basicsr.archs.* (weights independent). Some forks use codeformer.archs
+        CodeFormer = None  # type: ignore
         try:
-            from codeformer.archs.codeformer_arch import CodeFormer  # type: ignore
+            from basicsr.archs.codeformer_arch import CodeFormer as _CF  # type: ignore
+            CodeFormer = _CF  # type: ignore
         except Exception:
-            need_clone = True
-        if need_clone and os.getenv('MIRAGE_CODEFORMER_AUTOCLONE', '1').lower() in ('1','true','yes','on'):
-            # Clone into a writable path inside models (repo root may be read-only in some deploy envs)
-            repo_dir = os.getenv('MIRAGE_CODEFORMER_REPO_DIR', os.path.join('models', '_codeformer_repo'))
-            if self._ensure_repo_clone(repo_dir):
-                import sys as _sys
-                if repo_dir not in _sys.path:
-                    _sys.path.append(repo_dir)
-            else:
-                logger.warning('CodeFormer repo clone failed; enhancement disabled')
-                return
             try:
-                from codeformer.archs.codeformer_arch import CodeFormer  # type: ignore
-            except ModuleNotFoundError as e:
-                # Likely missing dependencies such as facexlib / basicsr
-                logger.warning(f"CodeFormer module import still failing after clone (dependency missing?): {e}")
-                return
-            except Exception as e:  # still failing
-                logger.warning(f"CodeFormer module import failed after clone attempt: {e}")
-                return
+                from codeformer.archs.codeformer_arch import CodeFormer as _CF  # type: ignore
+                CodeFormer = _CF  # type: ignore
+            except Exception as e:
+                # Attempt repo clone only if autoclone enabled and both imports failed
+                if os.getenv('MIRAGE_CODEFORMER_AUTOCLONE', '1').lower() in ('1','true','yes','on'):
+                    repo_dir = os.getenv('MIRAGE_CODEFORMER_REPO_DIR', os.path.join('models', '_codeformer_repo'))
+                    if self._ensure_repo_clone(repo_dir):
+                        import sys as _sys
+                        if repo_dir not in _sys.path:
+                            _sys.path.append(repo_dir)
+                        try:
+                            from basicsr.archs.codeformer_arch import CodeFormer as _CF2  # type: ignore
+                            CodeFormer = _CF2  # type: ignore
+                        except Exception:
+                            try:
+                                from codeformer.archs.codeformer_arch import CodeFormer as _CF3  # type: ignore
+                                CodeFormer = _CF3  # type: ignore
+                            except Exception as e2:
+                                logger.warning(f"CodeFormer import failed after clone: {e2}")
+                                return
+                    else:
+                        logger.warning(f"CodeFormer repo clone failed; enhancement disabled ({e})")
+                        return
+                else:
+                    logger.warning(f"CodeFormer import failed (no autoclone): {e}")
+                    return
         try:
             from basicsr.archs.rrdbnet_arch import RRDBNet  # noqa: F401
         except Exception:
@@ -276,12 +287,20 @@ class FaceSwapPipeline:
         return pcm_bytes
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
-        if not self.initialized or self.swapper is None or self.app is None or self.source_face is None:
+        if not self.initialized or self.swapper is None or self.app is None:
+            if self.swap_debug:
+                logger.debug('process_frame: pipeline not fully initialized yet')
+            return frame
+        if self.source_face is None:
+            if self.swap_debug:
+                logger.debug('process_frame: no source_face set yet')
             return frame
         t0 = time.time()
         faces = self.app.get(frame)
         self._last_faces_cache = faces
         if not faces:
+            if self.swap_debug:
+                logger.debug('process_frame: no faces detected in incoming frame')
             self._record_latency(time.time() - t0)
             self._stats['swap_faces_last'] = 0
             return frame
@@ -298,6 +317,8 @@ class FaceSwapPipeline:
                 count += 1
             except Exception as e:
                 logger.debug(f"Swap failed for face: {e}")
+        if self.swap_debug:
+            logger.debug(f'process_frame: detected={len(faces)} swapped={count} stride={self.codeformer_frame_stride} apply_cf={count>0 and (self._frame_index % self.codeformer_frame_stride == 0)}')
         # CodeFormer stride / face-region logic
         apply_cf = (
             self.codeformer is not None and
@@ -363,6 +384,13 @@ class FaceSwapPipeline:
         except Exception:
             pass
         return info
+
+    # Legacy interface used by webrtc_server data channel
+    def get_performance_stats(self) -> Dict[str, Any]:  # pragma: no cover simple delegate
+        stats = self.get_stats()
+        # Provide alias field names expected historically (if any)
+        stats['frames_processed'] = stats.get('frames')
+        return stats
 
     # Backwards compatibility for earlier server expecting process_video_frame
     def process_video_frame(self, frame: np.ndarray, frame_idx: int | None = None) -> np.ndarray:
