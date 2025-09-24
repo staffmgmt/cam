@@ -35,6 +35,9 @@ class FaceSwapPipeline:
         self.initialized = False
         self.source_face = None
         self.source_img_meta = {}
+        # Legacy compatibility flags expected by old WebRTC data channel handlers
+        # 'loaded' previously indicated full reenactment stack ready; here it maps to self.initialized
+        self.loaded = False
         # Single enhancer path: CodeFormer (optional)
         self.max_faces = int(os.getenv('MIRAGE_MAX_FACES', '1'))
         self._stats = {
@@ -121,6 +124,7 @@ class FaceSwapPipeline:
             logger.warning(f"CodeFormer init failed, disabling: {e}")
             self.codeformer = None
         self.initialized = True
+    self.loaded = True  # legacy attribute for external checks
         logger.info('FaceSwapPipeline initialized')
         return True
 
@@ -157,6 +161,17 @@ class FaceSwapPipeline:
         self.source_img_meta = {'resolution': img.shape[:2], 'num_faces': len(faces)}
         logger.info('Source face set')
         return True
+
+    # Legacy method name alias used by some data channel messages
+    def set_reference_frame(self, image_input) -> bool:  # pragma: no cover - thin shim
+        return self.set_source_image(image_input)
+
+    # Audio processing stubs (voice conversion not yet integrated in new simplified pipeline)
+    def process_audio_chunk(self, pcm_bytes: bytes) -> bytes:  # pragma: no cover
+        """Pass-through audio to satisfy legacy interface expectations.
+        Future: integrate voice conversion here. For now: return original audio data.
+        """
+        return pcm_bytes
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         if not self.initialized or self.swapper is None or self.app is None or self.source_face is None:
