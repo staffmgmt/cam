@@ -67,13 +67,7 @@ class FaceSwapPipeline:
     def initialize(self):
         if self.initialized:
             return True
-        providers = None
-        try:
-            # Let insightface choose; can restrict with env MIRAGE_CUDA_ONLY
-            if os.getenv('MIRAGE_CUDA_ONLY'):
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        except Exception:
-            providers = None
+        providers = self._select_providers()
         if insightface is None or FaceAnalysis is None:
             raise ImportError("insightface (and its deps like onnxruntime) not available. Ensure onnxruntime, onnx, torch installed.")
         self.app = FaceAnalysis(name='buffalo_l', providers=providers)
@@ -93,6 +87,49 @@ class FaceSwapPipeline:
         self.loaded = True  # legacy attribute for external checks
         logger.info('FaceSwapPipeline initialized')
         return True
+
+    def _select_providers(self) -> List[str] | None:
+        """Decide ONNX Runtime providers with GPU preference and diagnostics.
+
+        Env controls:
+          MIRAGE_FORCE_CPU=1        -> force CPU only
+          MIRAGE_CUDA_ONLY=1        -> request CUDA + CPU fallback (legacy name)
+          MIRAGE_REQUIRE_GPU=1      -> raise if CUDA provider not available
+        """
+        force_cpu = os.getenv('MIRAGE_FORCE_CPU', '0').lower() in ('1','true','yes','on')
+        require_gpu = os.getenv('MIRAGE_REQUIRE_GPU', '0').lower() in ('1','true','yes','on')
+        cuda_only_flag = os.getenv('MIRAGE_CUDA_ONLY', '0').lower() in ('1','true','yes','on')
+        try:
+            import onnxruntime as ort  # type: ignore
+            avail = ort.get_available_providers()
+            try:
+                ver = ort.__version__  # type: ignore
+            except Exception:
+                ver = 'unknown'
+            logger.info(f"[providers] onnxruntime {ver} available={avail}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"ONNX Runtime not importable ({e}); letting insightface choose default providers")
+            return None
+        if force_cpu:
+            logger.info('[providers] MIRAGE_FORCE_CPU=1 -> using CPUExecutionProvider only')
+            return ['CPUExecutionProvider'] if 'CPUExecutionProvider' in avail else None
+        providers: List[str] = []
+        if 'CUDAExecutionProvider' in avail:
+            providers.append('CUDAExecutionProvider')
+        if 'CPUExecutionProvider' in avail:
+            providers.append('CPUExecutionProvider')
+        if 'CUDAExecutionProvider' not in providers:
+            msg = '[providers] CUDAExecutionProvider NOT available; running on CPU'
+            if require_gpu or cuda_only_flag:
+                # escalate to warning / potential exception
+                logger.warning(msg + ' (require_gpu flag set)')
+                if require_gpu:
+                    raise RuntimeError('GPU required but CUDAExecutionProvider unavailable')
+            else:
+                logger.info(msg)
+        else:
+            logger.info(f"[providers] Using providers order: {providers}")
+        return providers or None
 
     def _ensure_repo_clone(self, target_dir: str) -> bool:
         """Clone CodeFormer repo shallowly if missing. Returns True if directory exists after call."""
@@ -309,7 +346,7 @@ class FaceSwapPipeline:
 
     def get_stats(self) -> Dict[str, Any]:
         cf_avg = float(np.mean(self._codeformer_lat_hist)) if self._codeformer_lat_hist else None
-        return dict(
+        info: Dict[str, Any] = dict(
             self._stats,
             initialized=self.initialized,
             codeformer_fidelity=self.codeformer_fidelity if self.codeformer is not None else None,
@@ -318,6 +355,14 @@ class FaceSwapPipeline:
             codeformer_face_only=self.codeformer_face_only,
             codeformer_avg_latency_ms=cf_avg,
         )
+        # Provider diagnostics (best-effort)
+        try:  # pragma: no cover
+            import onnxruntime as ort  # type: ignore
+            info['available_providers'] = ort.get_available_providers()
+            info['active_providers'] = getattr(self.app, 'providers', None) if self.app else None
+        except Exception:
+            pass
+        return info
 
     # Backwards compatibility for earlier server expecting process_video_frame
     def process_video_frame(self, frame: np.ndarray, frame_idx: int | None = None) -> np.ndarray:
