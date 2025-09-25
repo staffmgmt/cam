@@ -49,38 +49,20 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # Copy application source
 COPY . /app
 
-# Create directories for models and checkpoints (if not already present) and make them writable at runtime
+## Create only required directories (face swap: inswapper + optional codeformer)
 RUN mkdir -p \
-        /app/models/liveportrait \
-        /app/models/rvc \
-        /app/models/hubert \
-        /app/models/rmvpe \
-        /app/checkpoints \
+        /app/models/inswapper \
+        /app/models/codeformer \
         /app/.cache/huggingface/hub \
         /app/.cache/huggingface/transformers \
         /app/.cache/insightface \
         /app/.insightface \
         /tmp/matplotlib \
         /tmp/cuda_cache \
-    && chmod -R 777 /app/models /app/checkpoints /app/.cache /app/.insightface /tmp/cuda_cache /tmp/matplotlib
+    && chmod -R 777 /app/models /app/.cache /app/.insightface /tmp/cuda_cache /tmp/matplotlib
 
-# Optional model downloader configuration (example URLs)
 ARG MIRAGE_DOWNLOAD_MODELS=1
-ARG MIRAGE_LP_APPEARANCE_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/appearance_feature_extractor.onnx"
-ARG MIRAGE_LP_MOTION_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/motion_extractor.onnx"
-# Use myn0908 generator with grid fix (opset 20); requires ORT >= 1.18
-ARG MIRAGE_LP_GENERATOR_URL="https://huggingface.co/myn0908/Live-Portrait-ONNX/resolve/main/generator_fix_grid.onnx"
-# Do NOT set GRID_PLUGIN_URL to avoid TensorRT dependency in this image
-# Optional custom ops plugin is disabled by default (TensorRT not present in this image)
-# ARG MIRAGE_LP_GRID_PLUGIN_URL=""
-ARG MIRAGE_LP_STITCHING_URL="https://huggingface.co/warmshao/FasterLivePortrait/resolve/main/liveportrait_onnx/stitching.onnx"
-ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS} \
-    MIRAGE_LP_APPEARANCE_URL=${MIRAGE_LP_APPEARANCE_URL} \
-    MIRAGE_LP_MOTION_URL=${MIRAGE_LP_MOTION_URL} \
-    MIRAGE_LP_GENERATOR_URL=${MIRAGE_LP_GENERATOR_URL} \
-    MIRAGE_LP_STITCHING_URL=${MIRAGE_LP_STITCHING_URL}
-# Skip model download during build - only download at runtime if needed
-# RUN python3 /app/model_downloader.py || true
+ENV MIRAGE_DOWNLOAD_MODELS=${MIRAGE_DOWNLOAD_MODELS}
 
 # Expose HTTP port
 EXPOSE 7860
@@ -103,8 +85,8 @@ ENV HOME=/app \
     MIRAGE_WEBRTC_STATS_INTERVAL=5000 \
     MIRAGE_WEBRTC_FORCE_RELAY=0
 
-# Enforce single neural path (SCRFD + LivePortrait generator)
-ENV MIRAGE_REQUIRE_NEURAL=1
+# Face swap enforced (no reenactment stack)
+ENV MIRAGE_FACE_SWAP_ONLY=1
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
