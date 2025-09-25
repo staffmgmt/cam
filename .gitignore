@@ -28,5 +28,8 @@ models/**/*.ckpt
 !models/**/README.md
 !models/**/README.txt
 !models/**/README
+# Ignore transient partial/lock artifacts from interrupted downloads
+models/**/*.part.*
+models/**/*.lock
 checkpoints/
 !checkpoints/.gitkeep
