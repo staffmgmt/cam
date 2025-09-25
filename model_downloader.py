@@ -285,14 +285,25 @@ def maybe_download() -> bool:
     codef_dest = CODEFORMER_DIR / 'codeformer.pth'
     if not codef_dest.exists():
         try:
-            print('[downloader] Downloading CodeFormer model...')
+            print('[downloader] Downloading CodeFormer model (optional)...')
             codef_dest.parent.mkdir(parents=True, exist_ok=True)
             with _FileLock(codef_dest):
                 if not codef_dest.exists():
                     _attempt_urls(codeformer_urls, codef_dest)
-            print(f'[downloader] ✅ CodeFormer ready: {codef_dest}')
-            _audit('download_ok', model='codeformer', path=str(codef_dest))
-        except Exception as e:
+            if codef_dest.exists() and codef_dest.stat().st_size > 1048576:  # >1MB sanity threshold
+                print(f'[downloader] ✅ CodeFormer ready: {codef_dest}')
+                _audit('download_ok', model='codeformer', path=str(codef_dest))
+            else:
+                if codef_dest.exists():
+                    try:
+                        size = codef_dest.stat().st_size
+                        print(f'[downloader] ⚠️ CodeFormer file too small ({size} bytes); removing partial')
+                        codef_dest.unlink()
+                    except Exception:
+                        pass
+                print('[downloader] ⚠️ CodeFormer unavailable after attempts (continuing without enhancer)')
+                _audit('download_incomplete', model='codeformer')
+        except Exception as e:  # pragma: no cover - best effort optional
             print(f'[downloader] ⚠️ CodeFormer download failed (continuing): {e}')
             _audit('download_error', model='codeformer', error=str(e))
     else:

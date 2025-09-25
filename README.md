@@ -147,6 +147,8 @@ Pipeline stats (subset) from swap pipeline:
 | `MIRAGE_TURN_TLS_ONLY` | Filter TURN to TLS/TCP | `1` |
 | `MIRAGE_PREFER_H264` | Prefer H264 codec in SDP munging | `0` |
 | `MIRAGE_VOICE_ENABLE` | Enable voice processor stub | `0` |
+| `MIRAGE_PERSIST_MODELS` | Persist models under /data and symlink /app/models | `1` |
+| `MIRAGE_PERSIST_MODELS` | Persist models in /data (HF Space) via symlink | `1` |
 
 CodeFormer fidelity example:
 ```bash
@@ -229,6 +231,70 @@ If problems persist, capture the Container log stack trace and open an issue.
 
 ## Model Auto-Download
 `model_downloader.py` manages required weights with atomic file locks. It supports overriding sources via env variables and gracefully continues if optional enhancers fail to download.
+
+### Persistent Storage Strategy (Hugging Face Spaces)
+
+By default (`MIRAGE_PERSIST_MODELS=1`), the container will:
+
+1. Create (if missing) a persistent directory: `/data/mirage_models`.
+2. Migrate any existing files from an earlier ephemeral `/app/models` (first run only, if the persistent dir is empty).
+3. Symlink `/app/models -> /data/mirage_models`.
+4. Run integrity checks each startup: if the sentinel `.provisioned` exists but any required model (currently `inswapper/inswapper_128_fp16.onnx`) is missing, the downloader is re-invoked automatically.
+
+Disable persistence with:
+```bash
+MIRAGE_PERSIST_MODELS=0
+```
+This forces models to re-download on each cold start (not recommended for production latency / rate-limits).
+
+Sentinel files:
+- `.provisioned` – marker indicating a successful prior provisioning.
+- `.provisioned_meta.json` – sizes and metadata of required models at provisioning time (informational).
+
+If you set `MIRAGE_PROVISION_FRESH=1`, the sentinel is removed and a full re-download is attempted (useful when updating model versions or clearing partial/corrupt files).
+
+Troubleshooting missing models:
+- Call `/debug/models` – it now reports symlink status, sentinel presence, and sizes.
+- If `inswapper` is missing but sentinel present, integrity logic should already trigger re-provision. If not, trigger manually with `MIRAGE_PROVISION_FRESH=1`.
+
+
+### Persistence Strategy (Hugging Face Spaces)
+By default (`MIRAGE_PERSIST_MODELS=1`) the container will:
+1. Create a persistent directory at `/data/mirage_models`.
+2. Symlink `/app/models -> /data/mirage_models` so model downloads survive restarts.
+3. Maintain a sentinel file `.provisioned` plus a meta JSON summarizing required model sizes.
+4. On startup, if the sentinel exists but required files are missing (stale / manual deletion), it forces a re-download.
+
+Disable persistence (always ephemeral) with:
+```bash
+MIRAGE_PERSIST_MODELS=0
+```
+
+You can also force a fresh provisioning ignoring the sentinel:
+```bash
+MIRAGE_PROVISION_FRESH=1
+```
+
+Debug current model status:
+```bash
+curl -s https://<space-subdomain>.hf.space/debug/models | jq
+```
+
+Example response:
+```json
+{
+	"inswapper": {"exists": true, "size": 87916544},
+	"codeformer": {"exists": true, "size": 178140560},
+	"sentinel": {"exists": true, "meta_exists": true},
+	"storage": {
+		"root_is_symlink": true,
+		"root_path": "/app/models",
+		"target": "/data/mirage_models",
+		"persist_mode_env": "1"
+	},
+	"pipeline_initialized": false
+}
+```
 
 ### Endpoints Recap
 See Metrics Endpoints section above. Typical usage examples:

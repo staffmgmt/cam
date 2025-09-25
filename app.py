@@ -161,9 +161,27 @@ async def debug_models():
     root = Path(__file__).parent / 'models'
     ins = root / 'inswapper' / 'inswapper_128_fp16.onnx'
     codef = root / 'codeformer' / 'codeformer.pth'
+    sentinel = root / '.provisioned'
+    meta = root / '.provisioned_meta.json'
+    # Detect symlink & target
+    is_symlink = root.is_symlink()
+    target = None
+    if is_symlink:
+        try:
+            target = root.resolve()
+        except Exception:
+            target = None
+    storage_mode = os.environ.get('MIRAGE_PERSIST_MODELS', '1')
     return {
         'inswapper': {'exists': ins.exists(), 'size': ins.stat().st_size if ins.exists() else 0},
         'codeformer': {'exists': codef.exists(), 'size': codef.stat().st_size if codef.exists() else 0},
+        'sentinel': {'exists': sentinel.exists(), 'meta_exists': meta.exists()},
+        'storage': {
+            'root_is_symlink': is_symlink,
+            'root_path': str(root),
+            'target': str(target) if target else None,
+            'persist_mode_env': storage_mode
+        },
         'pipeline_initialized': pipeline_initialized
     }
 
