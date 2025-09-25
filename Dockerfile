@@ -49,6 +49,17 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # Copy application source
 COPY . /app
 
+# --- Pre-cache InsightFace analysis models (buffalo_l) to avoid cold-start ---
+# This is best-effort: failure will not break build; runtime can still lazy-download.
+ENV MIRAGE_ANALYSIS_MODEL=buffalo_l \
+        MIRAGE_PRECACHE_ANALYSIS=1
+RUN if [ "$MIRAGE_PRECACHE_ANALYSIS" = "1" ]; then \
+            echo "[build] Pre-caching InsightFace model: $MIRAGE_ANALYSIS_MODEL" && \
+            python3 precache_insightface.py || echo "[build] Warning: precache failed (will attempt at runtime)" ; \
+        else \
+            echo "[build] Skipping InsightFace precache" ; \
+        fi
+
 ## Create only required directories (face swap: inswapper + optional codeformer)
 RUN mkdir -p \
         /app/models/inswapper \

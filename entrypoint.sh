@@ -57,6 +57,9 @@ ls -lh "${MODEL_ROOT}/inswapper" 2>/dev/null || true
 echo "[entrypoint] CodeFormer dir contents:"
 ls -lh "${MODEL_ROOT}/codeformer" 2>/dev/null || true
 
+echo "[entrypoint] InsightFace analysis model cache (buffalo_l if present):"
+ls -lh /app/.insightface/models/buffalo_l 2>/dev/null || echo "(buffalo_l directory not yet present)"
+
 # Minimal SHA256 function (skip if file huge and hashing disabled)
 hash_file() {
   local f="$1"
