@@ -562,6 +562,11 @@ class OutboundVideoTrack(VideoStreamTrack):
         if self._placeholder_active and time.time() > self._placeholder_timeout:
             self._placeholder_active = False
         placeholder_active = self._placeholder_active
+        if placeholder_active and (self._frame_count % 15) == 0:
+            try:
+                logger.warning(f"[video-placeholder] still active fc={self._frame_count} src={'set' if self._source else 'none'} timeout_in={int(self._placeholder_timeout-time.time())}")
+            except Exception:
+                pass
         try:
             # Color bars
             num_bars = 6

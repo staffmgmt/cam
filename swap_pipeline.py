@@ -74,7 +74,7 @@ class FaceSwapPipeline:
         self.codeformer = None
         self.codeformer_fidelity = float(os.getenv('MIRAGE_CODEFORMER_FIDELITY', '0.75'))
         self.codeformer_loaded = False
-    self.codeformer_error: str | None = None
+        self.codeformer_error: str | None = None
         # Debug verbosity for swap decisions
         self.swap_debug = os.getenv('MIRAGE_SWAP_DEBUG', '0').lower() in ('1','true','yes','on')
         # Brightness compensation configuration
