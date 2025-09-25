@@ -82,20 +82,20 @@ class FaceSwapPipeline:
         self.low_brightness_threshold = float(os.getenv('MIRAGE_LOW_BRIGHTNESS_THRESH', '40'))
         # Similarity threshold for logging (cosine similarity typical range [-1,1])
         self.similarity_warn_threshold = float(os.getenv('MIRAGE_SIMILARITY_WARN', '0.15'))
-    # Temporal reuse configuration
-    self.face_cache_ttl = int(os.getenv('MIRAGE_FACE_CACHE_TTL', '5') or '5')  # frames
-    self._cached_face = None
-    self._cached_face_age = 0
-    # Aggressive blend toggle for visibility
-    self.aggressive_blend = os.getenv('MIRAGE_AGGRESSIVE_BLEND', '0').lower() in ('1','true','yes','on')
-    # Optional face ROI upscaling for tiny faces
-    self.face_min_size = int(os.getenv('MIRAGE_FACE_MIN_SIZE', '80') or '80')
-    self.face_upscale_factor = float(os.getenv('MIRAGE_FACE_UPSCALE', '1.6'))
-    # Detector preprocessing (CLAHE) low light
-    self.det_clahe = os.getenv('MIRAGE_DET_CLAHE', '1').lower() in ('1','true','yes','on')
-    # End-to-end latency markers
-    self._last_e2e_ms = None
-    self._e2e_hist: List[float] = []
+        # Temporal reuse configuration
+        self.face_cache_ttl = int(os.getenv('MIRAGE_FACE_CACHE_TTL', '5') or '5')  # frames
+        self._cached_face = None
+        self._cached_face_age = 0
+        # Aggressive blend toggle for visibility
+        self.aggressive_blend = os.getenv('MIRAGE_AGGRESSIVE_BLEND', '0').lower() in ('1','true','yes','on')
+        # Optional face ROI upscaling for tiny faces
+        self.face_min_size = int(os.getenv('MIRAGE_FACE_MIN_SIZE', '80') or '80')
+        self.face_upscale_factor = float(os.getenv('MIRAGE_FACE_UPSCALE', '1.6'))
+        # Detector preprocessing (CLAHE) low light
+        self.det_clahe = os.getenv('MIRAGE_DET_CLAHE', '1').lower() in ('1','true','yes','on')
+        # End-to-end latency markers
+        self._last_e2e_ms = None
+        self._e2e_hist: List[float] = []
 
     def initialize(self):
         if self.initialized:
