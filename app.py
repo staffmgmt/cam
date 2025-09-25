@@ -34,10 +34,9 @@ WEBRTC_ROUTER_LOADED = False
 WEBRTC_IMPORT_ERROR = None
 try:
     from webrtc_server import router as webrtc_router  # type: ignore
-    # router in webrtc_server is already declared with prefix="/webrtc";
-    # adding another prefix here resulted in paths like /webrtc/webrtc/ping (404 for client calls).
-    # Mount without extra prefix so endpoints resolve at /webrtc/* as expected by the JS client.
-    app.include_router(webrtc_router)
+    # webrtc_server router is defined WITHOUT a prefix; mount under /webrtc here so
+    # endpoints resolve at /webrtc/ping, /webrtc/offer, etc.
+    app.include_router(webrtc_router, prefix="/webrtc")
     WEBRTC_ROUTER_LOADED = True
 except Exception as e:  # pragma: no cover
     WEBRTC_IMPORT_ERROR = str(e)
