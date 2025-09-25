@@ -119,6 +119,49 @@ def _b64u_decode(data: str) -> bytes:
     return pybase64.urlsafe_b64decode(data + pad)
 
 
+async def _test_turn_connectivity(ice_servers):
+    """Test TURN server connectivity to diagnose NAT traversal issues."""
+    import socket
+    from urllib.parse import urlparse
+    
+    turn_tests = []
+    for server in ice_servers:
+        urls = server.urls if isinstance(server.urls, list) else [server.urls]
+        for url in urls:
+            if url.startswith('turn'):
+                try:
+                    parsed = urlparse(url.replace('turn:', 'http://').replace('turns:', 'https://'))
+                    host = parsed.hostname
+                    port = parsed.port or (443 if url.startswith('turns:') else 3478)
+                    
+                    # Basic TCP connectivity test
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(3)
+                    result = sock.connect_ex((host, port))
+                    sock.close()
+                    
+                    if result == 0:
+                        logger.info(f"TURN server reachable: {host}:{port}")
+                        turn_tests.append(True)
+                    else:
+                        logger.warning(f"TURN server unreachable: {host}:{port} (error {result})")
+                        turn_tests.append(False)
+                        
+                except Exception as e:
+                    logger.warning(f"TURN connectivity test failed for {url}: {e}")
+                    turn_tests.append(False)
+    
+    if turn_tests:
+        reachable = sum(turn_tests)
+        total = len(turn_tests)
+        if reachable == 0:
+            logger.error(f"All {total} TURN servers are unreachable - NAT traversal will likely fail")
+        elif reachable < total:
+            logger.warning(f"Only {reachable}/{total} TURN servers are reachable")
+        else:
+            logger.info(f"All {total} TURN servers are reachable")
+
+
 def _mint_token() -> str:
     """Stateless signed token: base64url(ts:nonce:mac)."""
     ts = str(int(time.time()))
@@ -262,13 +305,20 @@ def _check_api_key(header_val: Optional[str], token_val: Optional[str] = None):
 
 def _ice_configuration() -> RTCConfiguration:
     servers = []
+    turn_server_count = 0
+    stun_server_count = 0
+    
     # STUN servers (comma-separated)
     for url in [u.strip() for u in STUN_URLS.split(',') if u.strip()]:
         servers.append(RTCIceServer(urls=[url]))
+        stun_server_count += 1
+        
     # Optional TURN (static)
     if TURN_URL and TURN_USER and TURN_PASS:
         for tur in [u.strip() for u in str(TURN_URL).split(',') if u.strip()]:
             servers.append(RTCIceServer(urls=[tur], username=TURN_USER, credential=TURN_PASS))
+            turn_server_count += 1
+            
     # Optional Metered.ca ephemeral TURN using API key
     if METERED_API_KEY:
         try:
@@ -289,8 +339,10 @@ def _ice_configuration() -> RTCConfiguration:
                 username = s.get('username')
                 credential = s.get('credential')
                 servers.append(RTCIceServer(urls=urls, username=username, credential=credential))
+                turn_server_count += len([u for u in urls if u.startswith('turn')])
         except Exception as e:
-            logger.debug(f"Metered ICE fetch failed: {e}")
+            logger.warning(f"Metered ICE fetch failed: {e} - This may cause connection failures in restricted networks")
+            
     # Optionally filter to TLS/TCP-only TURN to succeed behind strict firewalls
     def _is_tls_tcp(url: str) -> bool:
         u = url.lower()
@@ -298,18 +350,40 @@ def _ice_configuration() -> RTCConfiguration:
 
     if TURN_TLS_ONLY:
         filtered = []
+        original_turn_count = turn_server_count
+        turn_server_count = 0
         for s in servers:
             urls = s.urls if isinstance(s.urls, list) else [s.urls]
             keep_urls = [u for u in urls if _is_tls_tcp(u)]
             if keep_urls:
                 filtered.append(RTCIceServer(urls=keep_urls, username=getattr(s,'username',None), credential=getattr(s,'credential',None)))
+                turn_server_count += len([u for u in keep_urls if u.startswith('turn')])
         if filtered:
             servers = filtered
+            logger.info(f"TLS_ONLY filter: kept {turn_server_count}/{original_turn_count} TURN servers")
         else:
             # As a safety, if nothing matched, keep originals
-            pass
+            logger.warning("TLS_ONLY filter removed all TURN servers - keeping originals")
+            turn_server_count = original_turn_count
+    
+    # Log server availability for connection failure diagnostics
+    if turn_server_count == 0:
+        logger.warning("No TURN servers configured - NAT traversal will likely fail in restricted networks")
+    else:
+        logger.info(f"ICE configuration: {stun_server_count} STUN, {turn_server_count} TURN servers")
 
-    return RTCConfiguration(iceServers=servers)
+    # Configure ICE transport policy
+    if FORCE_RELAY:
+        # Force all connections through TURN servers only
+        config = RTCConfiguration(iceServers=servers, iceTransportPolicy="relay")
+        logger.info("ICE transport policy: relay-only (FORCE_RELAY enabled)")
+        if turn_server_count == 0:
+            logger.error("FORCE_RELAY enabled but no TURN servers available - connections will fail")
+    else:
+        config = RTCConfiguration(iceServers=servers)
+        logger.info("ICE transport policy: all (direct + relay)")
+    
+    return config
 
 
 def _prefer_codec(sdp: str, kind: str, codec: str) -> str:
@@ -765,7 +839,22 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                 logger.warning(f"Pipeline reset failed during new offer: {e}")
             _peer_state = None
 
-    pc = RTCPeerConnection(configuration=_ice_configuration())
+    ice_config = _ice_configuration()
+    # Log ICE configuration for diagnostics
+    server_summary = []
+    for server in ice_config.iceServers:
+        urls = server.urls if isinstance(server.urls, list) else [server.urls]
+        has_auth = bool(getattr(server, 'username', None))
+        for url in urls:
+            server_type = 'TURN' if url.startswith('turn') else 'STUN'
+            server_summary.append(f"{server_type}:{url}{'(auth)' if has_auth else ''}")
+    logger.info(f"ICE servers configured: {', '.join(server_summary)}")
+    
+    # Test TURN server connectivity (async, don't block connection)
+    if ice_config.iceServers:
+        asyncio.create_task(_test_turn_connectivity(ice_config.iceServers))
+    
+    pc = RTCPeerConnection(configuration=ice_config)
     blackhole = MediaBlackhole()  # optional sink
 
     @pc.on("datachannel")
@@ -898,6 +987,44 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                 _peer_state.last_ice_state = pc.iceConnectionState
         except Exception:
             pass
+        
+        # Log detailed ICE failure diagnostics
+        if pc.iceConnectionState in ("disconnected", "failed"):
+            try:
+                # Log ICE transport stats if available
+                stats = await pc.getStats()
+                ice_candidates = []
+                ice_pairs = []
+                for stat_id, stat in stats.items():
+                    if hasattr(stat, 'type'):
+                        if stat.type == "local-candidate":
+                            ice_candidates.append(f"local:{getattr(stat, 'candidateType', '?')}:{getattr(stat, 'protocol', '?')}:{getattr(stat, 'address', '?')}:{getattr(stat, 'port', '?')}")
+                        elif stat.type == "remote-candidate": 
+                            ice_candidates.append(f"remote:{getattr(stat, 'candidateType', '?')}:{getattr(stat, 'protocol', '?')}:{getattr(stat, 'address', '?')}:{getattr(stat, 'port', '?')}")
+                        elif stat.type == "candidate-pair":
+                            state = getattr(stat, 'state', '?')
+                            ice_pairs.append(f"pair:{state}:{getattr(stat, 'priority', '?')}")
+                
+                logger.warning(f"ICE {pc.iceConnectionState} - candidates: {len(ice_candidates)} pairs: {len(ice_pairs)}")
+                if ice_candidates:
+                    logger.info(f"ICE candidates: {', '.join(ice_candidates[:10])}")  # Limit to first 10
+                if ice_pairs:
+                    logger.info(f"ICE pairs: {', '.join(ice_pairs[:5])}")  # Limit to first 5
+                    
+            except Exception as e:
+                logger.debug(f"ICE stats collection failed: {e}")
+    
+    @pc.on("icegatheringstatechange") 
+    async def on_ice_gathering_change():
+        logger.info("ICE gathering state: %s", pc.iceGatheringState)
+        
+    @pc.on("icecandidate")
+    async def on_ice_candidate(candidate):
+        if candidate:
+            logger.debug(f"ICE candidate: {candidate.candidate}")
+        else:
+            logger.info("ICE gathering complete (end-of-candidates)")
+    
 
     # Prepare outbound video first and register track handler before remote description,
     # so we don't miss the initial 'track' events fired during setRemoteDescription.
