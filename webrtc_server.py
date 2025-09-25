@@ -525,7 +525,9 @@ class OutboundVideoTrack(VideoStreamTrack):
         self._frame_count = 0
         self._debug_emitted = 0
         self._placeholder_sent = 0
-        self._placeholder_until = time.time() + 5.0  # send placeholder frames up to 5s until source yields processed frames
+        # Placeholder mode active until first successful frame relay OR timeout
+        self._placeholder_active = True
+        self._placeholder_timeout = time.time() + 5.0
 
     def set_source(self, track: MediaStreamTrack):
         self._source = track
@@ -538,6 +540,8 @@ class OutboundVideoTrack(VideoStreamTrack):
                 # Detect if frame is still a raw passthrough sized frame (heuristic: placeholder period or frame_count==0)
                 self._frame_count += 1
                 self._debug_emitted += 1
+                if self._placeholder_active:
+                    self._placeholder_active = False
                 if (self._frame_count % 30) == 0:
                     try:
                         logger.info(f"OutboundVideoTrack relayed frame {self._frame_count} size={getattr(f, 'width', '?')}x{getattr(f, 'height', '?')}")
@@ -553,9 +557,11 @@ class OutboundVideoTrack(VideoStreamTrack):
         if delay > 0:
             await asyncio.sleep(delay)
         self._last_ts = time.time()
-        # Diagnostic test pattern: color bars + moving square + frame counter
+        # Diagnostic test pattern only while placeholder active and before timeout
         frame = np.zeros((self._height, self._width, 3), dtype=np.uint8)
-        placeholder_active = (self._source is None) or (time.time() < self._placeholder_until)
+        if self._placeholder_active and time.time() > self._placeholder_timeout:
+            self._placeholder_active = False
+        placeholder_active = self._placeholder_active
         try:
             # Color bars
             num_bars = 6

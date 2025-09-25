@@ -91,16 +91,16 @@ class FaceSwapPipeline:
         # Optional face ROI upscaling for tiny faces
         self.face_min_size = int(os.getenv('MIRAGE_FACE_MIN_SIZE', '80') or '80')
         self.face_upscale_factor = float(os.getenv('MIRAGE_FACE_UPSCALE', '1.6'))
-    # Toggle for (currently disabled) naive small-face upscale path that caused artifacts
-    # Default OFF to prevent black rectangle artifacts observed when re-pasting scaled ROI
-    self.enable_face_upscale = os.getenv('MIRAGE_FACE_UPSCALE_ENABLE', '0').lower() in ('1','true','yes','on')
+        # Toggle for (currently disabled) naive small-face upscale path that caused artifacts
+        # Default OFF to prevent black rectangle artifacts observed when re-pasting scaled ROI
+        self.enable_face_upscale = os.getenv('MIRAGE_FACE_UPSCALE_ENABLE', '0').lower() in ('1','true','yes','on')
         # Detector preprocessing (CLAHE) low light
         self.det_clahe = os.getenv('MIRAGE_DET_CLAHE', '1').lower() in ('1','true','yes','on')
         # End-to-end latency markers
         self._last_e2e_ms = None
         self._e2e_hist: List[float] = []
-    # Track model file actually loaded for diagnostics
-    self.inswapper_model_path: str | None = None
+        # Track model file actually loaded for diagnostics
+        self.inswapper_model_path: str | None = None
 
     def initialize(self):
         if self.initialized:
