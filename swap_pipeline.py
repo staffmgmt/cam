@@ -74,6 +74,7 @@ class FaceSwapPipeline:
         self.codeformer = None
         self.codeformer_fidelity = float(os.getenv('MIRAGE_CODEFORMER_FIDELITY', '0.75'))
         self.codeformer_loaded = False
+    self.codeformer_error: str | None = None
         # Debug verbosity for swap decisions
         self.swap_debug = os.getenv('MIRAGE_SWAP_DEBUG', '0').lower() in ('1','true','yes','on')
         # Brightness compensation configuration
@@ -201,6 +202,7 @@ class FaceSwapPipeline:
             import torch  # type: ignore
         except Exception:
             logger.warning('Torch missing; cannot enable CodeFormer')
+            self.codeformer_error = 'torch_missing'
             return
         # Direct import path used by upstream project (packaged when installed)
         # Primary expected path: basicsr.archs.* (weights independent). Some forks use codeformer.archs
@@ -208,34 +210,15 @@ class FaceSwapPipeline:
         try:
             from basicsr.archs.codeformer_arch import CodeFormer as _CF  # type: ignore
             CodeFormer = _CF  # type: ignore
-        except Exception:
+        except Exception as e:
+            # Second import path attempt; if both fail capture reason
             try:
                 from codeformer.archs.codeformer_arch import CodeFormer as _CF  # type: ignore
                 CodeFormer = _CF  # type: ignore
-            except Exception as e:
-                # Attempt repo clone only if autoclone enabled and both imports failed
-                if os.getenv('MIRAGE_CODEFORMER_AUTOCLONE', '1').lower() in ('1','true','yes','on'):
-                    repo_dir = os.getenv('MIRAGE_CODEFORMER_REPO_DIR', os.path.join('models', '_codeformer_repo'))
-                    if self._ensure_repo_clone(repo_dir):
-                        import sys as _sys
-                        if repo_dir not in _sys.path:
-                            _sys.path.append(repo_dir)
-                        try:
-                            from basicsr.archs.codeformer_arch import CodeFormer as _CF2  # type: ignore
-                            CodeFormer = _CF2  # type: ignore
-                        except Exception:
-                            try:
-                                from codeformer.archs.codeformer_arch import CodeFormer as _CF3  # type: ignore
-                                CodeFormer = _CF3  # type: ignore
-                            except Exception as e2:
-                                logger.warning(f"CodeFormer import failed after clone: {e2}")
-                                return
-                    else:
-                        logger.warning(f"CodeFormer repo clone failed; enhancement disabled ({e})")
-                        return
-                else:
-                    logger.warning(f"CodeFormer import failed (no autoclone): {e}")
-                    return
+            except Exception as e2:
+                self.codeformer_error = f"import_failed:{e2}"
+                logger.warning(f"CodeFormer import failed (basicsr & codeformer paths). Skipping enhancement. Root error: {e2}")
+                return
         try:
             from basicsr.archs.rrdbnet_arch import RRDBNet  # noqa: F401
         except Exception:
@@ -281,6 +264,7 @@ class FaceSwapPipeline:
             self.codeformer_loaded = True
             logger.info('CodeFormer fully loaded')
         except Exception as e:
+            self.codeformer_error = f"init_failed:{e}"
             logger.warning(f"CodeFormer final init failed: {e}")
             self.codeformer = None
 
@@ -515,6 +499,7 @@ class FaceSwapPipeline:
             e2e_latency_avg_ms=(float(np.mean(self._e2e_hist)) if self._e2e_hist else None),
             inswapper_model_path=self.inswapper_model_path,
             face_upscale_enabled=self.enable_face_upscale,
+            codeformer_error=self.codeformer_error,
         )
         # Provider diagnostics (best-effort)
         try:  # pragma: no cover
