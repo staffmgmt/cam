@@ -194,6 +194,20 @@ async def webrtc_debug_state():
                 try:
                     if tr and getattr(tr, 'kind', None) == 'video' and hasattr(tr, '_debug_emitted'):
                         info["frames_emitted"] = getattr(tr, '_debug_emitted')
+                        # Outbound diagnostics (VideoStreamTrack subclass fields)
+                        diag_pairs = [
+                            ('_placeholder_active','placeholder_active'),
+                            ('_placeholder_sent','placeholder_frames'),
+                            ('_relay_failures','relay_failures'),
+                            ('_relay_last_error','relay_last_error'),
+                            ('_relay_last_error_ts','relay_last_error_ts'),
+                            ('_first_relay_ts','first_relay_ts'),
+                            ('_placeholder_initial_ts','placeholder_initial_ts'),
+                            ('_placeholder_deactivated_ts','placeholder_deactivated_ts'),
+                        ]
+                        for attr, key in diag_pairs:
+                            if hasattr(tr, attr):
+                                info[key] = getattr(tr, attr)
                 except Exception:
                     pass
                 return info
@@ -528,6 +542,13 @@ class OutboundVideoTrack(VideoStreamTrack):
         # Placeholder mode active until first successful frame relay OR timeout
         self._placeholder_active = True
         self._placeholder_timeout = time.time() + 5.0
+        # Diagnostics
+        self._relay_failures = 0
+        self._relay_last_error: Optional[str] = None
+        self._relay_last_error_ts: Optional[float] = None
+        self._first_relay_ts: Optional[float] = None
+        self._placeholder_deactivated_ts: Optional[float] = None
+        self._placeholder_initial_ts: float = time.time()
 
     def set_source(self, track: MediaStreamTrack):
         self._source = track
@@ -542,15 +563,22 @@ class OutboundVideoTrack(VideoStreamTrack):
                 self._debug_emitted += 1
                 if self._placeholder_active:
                     self._placeholder_active = False
+                    self._placeholder_deactivated_ts = time.time()
                 if (self._frame_count % 30) == 0:
                     try:
                         logger.info(f"OutboundVideoTrack relayed frame {self._frame_count} size={getattr(f, 'width', '?')}x{getattr(f, 'height', '?')}")
                     except Exception:
                         pass
+                if self._first_relay_ts is None:
+                    self._first_relay_ts = time.time()
                 return f
-            except Exception:
-                # fall back to black frame if source errors
-                pass
+            except Exception as e:
+                self._relay_failures += 1
+                if self._relay_failures <= 5 or (self._relay_failures % 50) == 0:
+                    logger.warning(f"OutboundVideoTrack relay failure count={self._relay_failures} err={e}")
+                self._relay_last_error = str(e)
+                self._relay_last_error_ts = time.time()
+                # fall back to placeholder pattern
         # generate black/diagnostic placeholder frame at target fps (early stage before processed frames ready)
         now = time.time()
         delay = self._frame_interval - (now - self._last_ts)
@@ -968,6 +996,17 @@ async def pipeline_stats():
                         ]:
                             if hasattr(tr, attr):
                                 track_stats[attr.lstrip('_')] = getattr(tr, attr)
+                        # Outbound diagnostics (if this is the outbound track)
+                        for oattr, key in [
+                            ('_relay_failures','relay_failures'),
+                            ('_relay_last_error','relay_last_error'),
+                            ('_relay_last_error_ts','relay_last_error_ts'),
+                            ('_placeholder_sent','placeholder_frames'),
+                            ('_placeholder_initial_ts','placeholder_initial_ts'),
+                            ('_placeholder_deactivated_ts','placeholder_deactivated_ts'),
+                        ]:
+                            if hasattr(tr, oattr):
+                                track_stats[key] = getattr(tr, oattr)
                         break
         except Exception as e:
             track_stats['error'] = f"track_stats: {e}" 

@@ -102,6 +102,44 @@ class FaceSwapPipeline:
         self._e2e_hist: List[float] = []
         # Track model file actually loaded for diagnostics
         self.inswapper_model_path: str | None = None
+        # Periodic structured logging interval (in frames) for runtime diagnostics
+        try:
+            # Default every 120 frames unless explicitly disabled (roughly ~4s at 30fps)
+            self.log_interval = int(os.getenv('MIRAGE_SWAP_LOG_INTERVAL', '120') or '120')
+        except Exception:
+            self.log_interval = 0  # disabled if invalid
+
+    def _log_periodic(self):
+        """Emit a concise structured log line every N frames if enabled.
+
+        Controlled by MIRAGE_SWAP_LOG_INTERVAL (>0). Keeps log volume bounded while
+        still providing real-time observability in production (e.g. container logs).
+        """
+        if not self.log_interval or self.log_interval < 1:
+            return
+        frames = self._stats.get('frames') or 0
+        if frames == 0 or (frames % self.log_interval) != 0:
+            return
+        s = self._stats
+        msg_parts = [
+            f"frames={s.get('frames')}",
+            f"swap_last={s.get('swap_faces_last')}",
+            f"swapped_total={s.get('total_faces_swapped')}",
+            f"faces_detected_total={s.get('total_faces_detected')}",
+            f"no_face_frames={s.get('frames_no_faces')}",
+            f"lat_ms_last={s.get('last_latency_ms'):.1f}" if s.get('last_latency_ms') is not None else "lat_ms_last=None",
+            f"lat_ms_avg={s.get('avg_latency_ms'):.1f}" if s.get('avg_latency_ms') is not None else "lat_ms_avg=None",
+            f"e2e_ms_last={self._last_e2e_ms:.1f}" if self._last_e2e_ms is not None else "e2e_ms_last=None",
+            f"brightness_last={s.get('brightness_last'):.1f}" if s.get('brightness_last') is not None else "brightness_last=None",
+            f"low_brightness_frames={s.get('frames_low_brightness')}",
+            f"primary_sim={s.get('last_primary_similarity'):.3f}" if s.get('last_primary_similarity') is not None else "primary_sim=None",
+            f"early_uninit={s.get('early_uninitialized')}",
+            f"early_no_source={s.get('early_no_source')}",
+            f"cf_enhanced={s.get('enhanced_frames')}",
+            f"cf_err={self.codeformer_error}" if self.codeformer_error else "cf_err=None",
+            f"providers={getattr(self, '_active_providers', None)}",
+        ]
+        logger.info("pipeline_stats " + ' '.join(msg_parts))
 
     def initialize(self):
         if self.initialized:
@@ -473,6 +511,8 @@ class FaceSwapPipeline:
         self._e2e_hist.append(self._last_e2e_ms)
         if len(self._e2e_hist) > 200:
             self._e2e_hist.pop(0)
+        # Periodic log emission
+        self._log_periodic()
         return out
 
     def _record_latency(self, dt: float):
