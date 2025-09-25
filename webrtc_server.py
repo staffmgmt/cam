@@ -204,6 +204,7 @@ async def webrtc_debug_state():
                             ('_first_relay_ts','first_relay_ts'),
                             ('_placeholder_initial_ts','placeholder_initial_ts'),
                             ('_placeholder_deactivated_ts','placeholder_deactivated_ts'),
+                            ('_raw_frames_in','raw_frames_in'),
                         ]
                         for attr, key in diag_pairs:
                             if hasattr(tr, attr):
@@ -404,9 +405,16 @@ class IncomingVideoTrack(MediaStreamTrack):
         self._pts_origin: Optional[float] = None  # monotonic origin
         self._last_sent_pts: Optional[int] = None
         self._time_base = (1, 90000)  # 90kHz typical video clock
+        self._raw_frames_in = 0
 
     async def recv(self):  # type: ignore[override]
         frame = await self.track.recv()
+        self._raw_frames_in += 1
+        if self._raw_frames_in == 1:
+            try:
+                logger.info("IncomingVideoTrack first frame received size=%sx%s" % (getattr(frame, 'width', '?'), getattr(frame, 'height', '?')))
+            except Exception:
+                pass
         self.frame_id += 1
         capture_t = time.time()
         if self._pts_origin is None:
@@ -992,7 +1000,7 @@ async def pipeline_stats():
                         # Heuristic: if it has our added attributes
                         for attr in [
                             '_last_latency_ms','_avg_latency_ms','_queue_wait_last_ms','_frames_passthrough',
-                            '_frames_processed','_frames_dropped','_placeholder_active'
+                            '_frames_processed','_frames_dropped','_placeholder_active','_raw_frames_in'
                         ]:
                             if hasattr(tr, attr):
                                 track_stats[attr.lstrip('_')] = getattr(tr, attr)
