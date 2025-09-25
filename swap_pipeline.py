@@ -58,7 +58,12 @@ class FaceSwapPipeline:
             'early_uninitialized': 0,
             'frames_no_faces': 0,
             'total_faces_detected': 0,
-            'total_faces_swapped': 0
+            'total_faces_swapped': 0,
+            # Brightness / quality tracking
+            'frames_low_brightness': 0,
+            'brightness_last': None,
+            # Similarity metrics
+            'last_primary_similarity': None,
         }
         self._lat_hist: List[float] = []
         self._codeformer_lat_hist: List[float] = []
@@ -71,6 +76,12 @@ class FaceSwapPipeline:
         self.codeformer_loaded = False
         # Debug verbosity for swap decisions
         self.swap_debug = os.getenv('MIRAGE_SWAP_DEBUG', '0').lower() in ('1','true','yes','on')
+        # Brightness compensation configuration
+        self.enable_brightness_comp = os.getenv('MIRAGE_BRIGHTNESS_COMP', '1').lower() in ('1','true','yes','on')
+        self.target_brightness = float(os.getenv('MIRAGE_TARGET_BRIGHTNESS', '90'))  # mean luminance target (0-255)
+        self.low_brightness_threshold = float(os.getenv('MIRAGE_LOW_BRIGHTNESS_THRESH', '40'))
+        # Similarity threshold for logging (cosine similarity typical range [-1,1])
+        self.similarity_warn_threshold = float(os.getenv('MIRAGE_SIMILARITY_WARN', '0.15'))
 
     def initialize(self):
         if self.initialized:
@@ -309,6 +320,22 @@ class FaceSwapPipeline:
                 logger.debug('process_frame: no source_face set yet')
             return frame
         t0 = time.time()
+        # Brightness analysis (grayscale mean) to understand low-light degradation
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness = float(np.mean(gray))
+            self._stats['brightness_last'] = brightness
+            if brightness < self.low_brightness_threshold:
+                self._stats['frames_low_brightness'] += 1
+                if self.enable_brightness_comp:
+                    # Simple gamma / gain compensation (scale then clip)
+                    gain = self.target_brightness / max(1.0, brightness)
+                    gain = min(gain, 3.0)  # clamp to avoid noise amplification
+                    frame = np.clip(frame.astype(np.float32) * gain, 0, 255).astype(np.uint8)
+                    if self.swap_debug:
+                        logger.debug(f'Applied brightness compensation gain={gain:.2f} (brightness={brightness:.1f})')
+        except Exception:
+            pass
         faces = self.app.get(frame)
         self._last_faces_cache = faces
         if not faces:
@@ -330,8 +357,27 @@ class FaceSwapPipeline:
         faces.sort(key=_area, reverse=True)
         out = frame
         count = 0
-        for f in faces[:self.max_faces]:
+        similarities: List[float] = []
+        for idx, f in enumerate(faces[:self.max_faces]):
             try:
+                # Compute similarity to source embedding (cosine) for diagnostics
+                try:
+                    src_emb = getattr(self.source_face, 'normed_embedding', None)
+                    tgt_emb = getattr(f, 'normed_embedding', None)
+                    sim = None
+                    if src_emb is not None and tgt_emb is not None:
+                        # Both are numpy arrays
+                        a = src_emb.astype(np.float32)
+                        b = tgt_emb.astype(np.float32)
+                        denom = (np.linalg.norm(a)*np.linalg.norm(b) + 1e-6)
+                        sim = float(np.dot(a, b) / denom)
+                        similarities.append(sim)
+                        if idx == 0:
+                            self._stats['last_primary_similarity'] = sim
+                        if self.swap_debug and sim is not None and sim < self.similarity_warn_threshold:
+                            logger.debug(f'Low similarity primary face sim={sim:.3f}')
+                except Exception:
+                    pass
                 out = self.swapper.get(out, f, self.source_face, paste_back=True)
                 count += 1
             except Exception as e:
@@ -340,10 +386,13 @@ class FaceSwapPipeline:
         # Optional debug overlay for visual confirmation
         if count > 0 and os.getenv('MIRAGE_DEBUG_OVERLAY', '0').lower() in ('1','true','yes','on'):
             try:
-                for f in faces[:self.max_faces]:
+                for i, f in enumerate(faces[:self.max_faces]):
                     x1,y1,x2,y2 = f.bbox.astype(int)
                     cv2.rectangle(out, (x1,y1), (x2,y2), (0,255,0), 2)
-                    cv2.putText(out, 'SWAP', (x1, max(0,y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
+                    label = 'SWAP'
+                    if i < len(similarities) and similarities[i] is not None:
+                        label += f' {similarities[i]:.2f}'
+                    cv2.putText(out, label, (x1, max(0,y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
             except Exception:
                 pass
         if self.swap_debug:
