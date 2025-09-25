@@ -664,6 +664,16 @@ class FaceSwapPipeline:
         self._e2e_hist.clear()
         self._codeformer_lat_hist.clear()
         
+        # Force GPU memory cleanup to prevent hanging on reconnection
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # Ensure all operations complete
+                logger.info("GPU cache cleared and synchronized during reset")
+        except Exception:
+            pass
+        
         logger.info("Pipeline state reset for reconnection")
 
 # Singleton access similar to previous pattern

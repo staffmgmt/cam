@@ -372,6 +372,7 @@ class PeerState:
     last_connection_state: Optional[str] = None
     last_ice_state: Optional[str] = None
     cleanup_task: Optional[asyncio.Task] = None
+    outbound_video: Optional['OutboundVideoTrack'] = None
 
 
 # In-memory single peer (extend to dict for multi-user)
@@ -560,6 +561,12 @@ class OutboundVideoTrack(VideoStreamTrack):
 
     def set_source(self, track: MediaStreamTrack):
         self._source = track
+        
+    def clear_source(self):
+        """Clear the source to prevent hanging on failed connections"""
+        self._source = None
+        self._placeholder_active = True  # Revert to placeholder mode
+        self._placeholder_timeout = time.time() + 5.0  # Reset timeout
 
     async def recv(self):  # type: ignore[override]
         src = self._source
@@ -738,12 +745,24 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     async with _peer_lock:
         # Ensure pipeline is ready before wiring tracks
         await _ensure_pipeline_initialized()
-        # Cleanup existing peer if present
+        # Cleanup existing peer if present - critical for retry scenarios
         if _peer_state is not None:
             try:
                 await _peer_state.pc.close()
+                logger.info("Closed existing peer connection for new offer")
             except Exception:
                 pass
+            # Clear outbound video source from previous connection
+            if _peer_state.outbound_video:
+                _peer_state.outbound_video.clear_source()
+                logger.info("Cleared outbound video source from previous connection")
+            # Reset pipeline state for clean reconnection
+            try:
+                from swap_pipeline import reset_pipeline
+                reset_pipeline()
+                logger.info("Pipeline reset for new offer")
+            except Exception as e:
+                logger.warning(f"Pipeline reset failed during new offer: {e}")
             _peer_state = None
 
     pc = RTCPeerConnection(configuration=_ice_configuration())
@@ -849,9 +868,20 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                 # Clean pipeline resources on connection failure/close
                 from swap_pipeline import reset_pipeline
                 reset_pipeline()
-                logger.info("Pipeline reset due to connection state change")
+                logger.info(f"Pipeline reset due to connection state: {pc.connectionState}")
             except Exception as e:
                 logger.warning(f"Pipeline reset failed on state change: {e}")
+            
+            # Clear global peer state to allow clean retry
+            async with _peer_lock:
+                global _peer_state
+                if _peer_state is not None and _peer_state.pc == pc:
+                    logger.info("Clearing global peer state due to connection failure")
+                    # Clear outbound video source to prevent hanging on retry
+                    if _peer_state.outbound_video:
+                        _peer_state.outbound_video.clear_source()
+                        logger.info("Cleared outbound video source")
+                    _peer_state = None
             
             if pc.connectionState == "failed":
                 try:
@@ -940,7 +970,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         logger.error(f"setLocalDescription error: {e}")
         raise HTTPException(status_code=500, detail=f"setLocalDescription: {e}")
 
-    _peer_state = PeerState(pc=pc, created=time.time())
+    _peer_state = PeerState(pc=pc, created=time.time(), outbound_video=outbound_video)
 
     logger.info("WebRTC answer created")
     return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
