@@ -92,7 +92,8 @@ def get_pipeline():  # type: ignore
         _pipeline_singleton = _PassThroughPipeline()
     return _pipeline_singleton
 
-router = APIRouter(prefix="/webrtc", tags=["webrtc"])
+# Router mounted by app with prefix "/webrtc"; declare here without its own prefix
+router = APIRouter(tags=["webrtc"])
 
 API_KEY = os.getenv("MIRAGE_API_KEY")
 REQUIRE_API_KEY = os.getenv("MIRAGE_REQUIRE_API_KEY", "0").strip().lower() in {"1","true","yes","on"}
