@@ -865,6 +865,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             @channel.on("open")
             def _on_open():
                 try:
+                    global _peer_state
                     if _peer_state is not None:
                         _peer_state.control_channel_ready = True
                 except Exception:
@@ -873,6 +874,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             @channel.on("close")
             def _on_close():
                 try:
+                    global _peer_state
                     if _peer_state is not None:
                         _peer_state.control_channel_ready = False
                 except Exception:
@@ -945,6 +947,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
     @pc.on("connectionstatechange")
     async def on_state_change():
+        global _peer_state
         logger.info("Peer connection state: %s", pc.connectionState)
         try:
             if _peer_state is not None:
@@ -981,6 +984,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
     @pc.on("iceconnectionstatechange")
     async def on_ice_state_change():
+        global _peer_state
         logger.info("ICE connection state: %s", pc.iceConnectionState)
         try:
             if _peer_state is not None:
