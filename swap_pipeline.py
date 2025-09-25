@@ -91,11 +91,16 @@ class FaceSwapPipeline:
         # Optional face ROI upscaling for tiny faces
         self.face_min_size = int(os.getenv('MIRAGE_FACE_MIN_SIZE', '80') or '80')
         self.face_upscale_factor = float(os.getenv('MIRAGE_FACE_UPSCALE', '1.6'))
+    # Toggle for (currently disabled) naive small-face upscale path that caused artifacts
+    # Default OFF to prevent black rectangle artifacts observed when re-pasting scaled ROI
+    self.enable_face_upscale = os.getenv('MIRAGE_FACE_UPSCALE_ENABLE', '0').lower() in ('1','true','yes','on')
         # Detector preprocessing (CLAHE) low light
         self.det_clahe = os.getenv('MIRAGE_DET_CLAHE', '1').lower() in ('1','true','yes','on')
         # End-to-end latency markers
         self._last_e2e_ms = None
         self._e2e_hist: List[float] = []
+    # Track model file actually loaded for diagnostics
+    self.inswapper_model_path: str | None = None
 
     def initialize(self):
         if self.initialized:
@@ -118,6 +123,8 @@ class FaceSwapPipeline:
             else:
                 raise FileNotFoundError(f"Missing InSwapper model (checked {INSWAPPER_ONNX_PATH} and {ALT_INSWAPPER_PATH})")
         self.swapper = insightface.model_zoo.get_model(model_path, providers=providers)
+        self.inswapper_model_path = model_path
+        logger.info(f"Loaded InSwapper model: {model_path}")
         # Optional CodeFormer enhancer
         if self.codeformer_enabled:
             self._try_load_codeformer()
@@ -411,27 +418,13 @@ class FaceSwapPipeline:
                             logger.debug(f'Low similarity primary face sim={sim:.3f}')
                 except Exception:
                     pass
-                # Upscale small face region before swapping to reduce warping artifacts
+                # NOTE: Previously attempted naive small-face ROI upscale introduced moving black box artifacts
+                # because face landmark coordinates remained in original frame space. We disable that path by default.
+                # If re-enabled in future, we must recompute detection landmarks on the upscaled ROI.
                 try:
-                    x1,y1,x2,y2 = f.bbox.astype(int)
-                    fh = y2 - y1; fw = x2 - x1
-                    if min(fh, fw) < self.face_min_size:
-                        # Extract padded ROI, upscale, run swapper, then downscale
-                        pad = int(0.15 * max(fh, fw))
-                        h, w = out.shape[:2]
-                        rx1 = max(0, x1 - pad); ry1 = max(0, y1 - pad)
-                        rx2 = min(w, x2 + pad); ry2 = min(h, y2 + pad)
-                        roi = out[ry1:ry2, rx1:rx2]
-                        if roi.size > 0:
-                            big = cv2.resize(roi, None, fx=self.face_upscale_factor, fy=self.face_upscale_factor, interpolation=cv2.INTER_CUBIC)
-                            swapped_big = self.swapper.get(big, f, self.source_face, paste_back=False)
-                            swapped_small = cv2.resize(swapped_big, (rx2-rx1, ry2-ry1), interpolation=cv2.INTER_LINEAR)
-                            out[ry1:ry2, rx1:rx2] = swapped_small
-                        else:
-                            out = self.swapper.get(out, f, self.source_face, paste_back=True)
-                    else:
-                        out = self.swapper.get(out, f, self.source_face, paste_back=True)
+                    out = self.swapper.get(out, f, self.source_face, paste_back=True)
                 except Exception:
+                    # Fallback: attempt again (rarely helps, mostly for logging symmetry)
                     out = self.swapper.get(out, f, self.source_face, paste_back=True)
                 count += 1
             except Exception as e:
@@ -520,6 +513,8 @@ class FaceSwapPipeline:
             debug_overlay=os.getenv('MIRAGE_DEBUG_OVERLAY', '0'),
             e2e_latency_ms=self._last_e2e_ms,
             e2e_latency_avg_ms=(float(np.mean(self._e2e_hist)) if self._e2e_hist else None),
+            inswapper_model_path=self.inswapper_model_path,
+            face_upscale_enabled=self.enable_face_upscale,
         )
         # Provider diagnostics (best-effort)
         try:  # pragma: no cover
