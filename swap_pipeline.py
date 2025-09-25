@@ -80,6 +80,11 @@ class FaceSwapPipeline:
             raise ImportError("insightface (and its deps like onnxruntime) not available. Ensure onnxruntime, onnx, torch installed.")
         self.app = FaceAnalysis(name='buffalo_l', providers=providers)
         self.app.prepare(ctx_id=0, det_size=(640,640))
+        # Capture active providers after prepare (best effort)
+        try:
+            self._active_providers = getattr(self.app, 'providers', providers)
+        except Exception:
+            self._active_providers = providers
         # Load swapper
         model_path = INSWAPPER_ONNX_PATH
         if not os.path.isfile(model_path):
@@ -332,6 +337,15 @@ class FaceSwapPipeline:
             except Exception as e:
                 logger.debug(f"Swap failed for face: {e}")
         self._stats['total_faces_swapped'] += count
+        # Optional debug overlay for visual confirmation
+        if count > 0 and os.getenv('MIRAGE_DEBUG_OVERLAY', '0').lower() in ('1','true','yes','on'):
+            try:
+                for f in faces[:self.max_faces]:
+                    x1,y1,x2,y2 = f.bbox.astype(int)
+                    cv2.rectangle(out, (x1,y1), (x2,y2), (0,255,0), 2)
+                    cv2.putText(out, 'SWAP', (x1, max(0,y1-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1, cv2.LINE_AA)
+            except Exception:
+                pass
         if self.swap_debug:
             logger.debug(f'process_frame: detected={len(faces)} swapped={count} stride={self.codeformer_frame_stride} apply_cf={count>0 and (self._frame_index % self.codeformer_frame_stride == 0)}')
         # CodeFormer stride / face-region logic
@@ -391,12 +405,13 @@ class FaceSwapPipeline:
             codeformer_face_only=self.codeformer_face_only,
             codeformer_avg_latency_ms=cf_avg,
             max_faces=self.max_faces,
+            debug_overlay=os.getenv('MIRAGE_DEBUG_OVERLAY', '0'),
         )
         # Provider diagnostics (best-effort)
         try:  # pragma: no cover
             import onnxruntime as ort  # type: ignore
             info['available_providers'] = ort.get_available_providers()
-            info['active_providers'] = getattr(self.app, 'providers', None) if self.app else None
+            info['active_providers'] = getattr(self, '_active_providers', None)
         except Exception:
             pass
         return info

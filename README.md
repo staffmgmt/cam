@@ -147,13 +147,38 @@ Pipeline stats (subset) from swap pipeline:
 | `MIRAGE_TURN_TLS_ONLY` | Filter TURN to TLS/TCP | `1` |
 | `MIRAGE_PREFER_H264` | Prefer H264 codec in SDP munging | `0` |
 | `MIRAGE_VOICE_ENABLE` | Enable voice processor stub | `0` |
-| `MIRAGE_PERSIST_MODELS` | Persist models under /data and symlink /app/models | `1` |
-| `MIRAGE_PERSIST_MODELS` | Persist models in /data (HF Space) via symlink | `1` |
+| `MIRAGE_PERSIST_MODELS` | Persist models in `/data/mirage_models` via symlink `/app/models` | `1` |
+| `MIRAGE_PROVISION_FRESH` | Force re-download of required models (ignores sentinel) | `0` |
+| `MIRAGE_PROC_MAX_DIM` | Max dimension (longest side) for processing downscale | `512` |
+| `MIRAGE_DEBUG_OVERLAY` | Draw green bbox + SWAP label on swapped faces | `0` |
+| `MIRAGE_SWAP_DEBUG` | Verbose per-frame swap decision logging | `0` |
 
 CodeFormer fidelity example:
 ```bash
 MIRAGE_CODEFORMER_FIDELITY=0.6
 ```
+
+### Processing Resolution & Visual Debug Overlay
+
+Two new controls help you verify that swapping is occurring and tune visual quality vs latency:
+
+| Control | Effect | Guidance |
+|---------|--------|----------|
+| `MIRAGE_PROC_MAX_DIM` | Caps the longest side of a frame before inference. Frames larger than this are downscaled for detection/swap, then returned at original size. | Raise (e.g. 640, 720) for crisper facial detail if GPU headroom allows; lower (384–512) to reduce latency on weaker GPUs. Minimum enforced is 64. |
+| `MIRAGE_DEBUG_OVERLAY` | When enabled (`1`), draws a green rectangle and the text `SWAP` over each face region that was swapped in the most recent frame. | Use temporarily to confirm active swapping; disable for production to avoid visual artifacts. |
+
+Example (higher detail + overlay for confirmation):
+```bash
+MIRAGE_PROC_MAX_DIM=640
+MIRAGE_DEBUG_OVERLAY=1
+```
+
+If you still perceive “no change” while counters show swaps:
+1. Ensure your reference image is a clear, well-lit, frontal face (avoid extreme angles / occlusions).
+2. Increase `MIRAGE_PROC_MAX_DIM` to 640 or 720 for sharper results.
+3. Temporarily enable `MIRAGE_DEBUG_OVERLAY=1` to visualize the swapped region.
+4. Check `/debug/pipeline` for `total_faces_swapped` and `swap_faces_last` > 0.
+
 
 ## 📋 Requirements
 

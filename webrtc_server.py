@@ -383,13 +383,18 @@ class IncomingVideoTrack(MediaStreamTrack):
         img = frame.to_ndarray(format="bgr24")
         h, w, _ = img.shape
         proc_input = img
-        # Optionally downscale for processing to cap latency
+        # Optionally downscale for processing to cap latency (configurable)
         try:
-            if max(h, w) > 512:
-                scale_w = 512
-                scale_h = int(h * (512 / w)) if w >= h else 512
-                if w < h:
-                    scale_w = int(w * (512 / h))
+            max_dim_cfg = int(os.getenv('MIRAGE_PROC_MAX_DIM', '512') or '512')
+            if max_dim_cfg < 64:
+                max_dim_cfg = 64
+            if max(h, w) > max_dim_cfg:
+                if w >= h:
+                    scale_w = max_dim_cfg
+                    scale_h = int(h * (max_dim_cfg / w))
+                else:
+                    scale_h = max_dim_cfg
+                    scale_w = int(w * (max_dim_cfg / h))
                 proc_input = cv2.resize(img, (max(1, scale_w), max(1, scale_h)))
         except Exception as e:
             logger.debug(f"Video downscale skip: {e}")
