@@ -38,6 +38,70 @@ try:
     # endpoints resolve at /webrtc/ping, /webrtc/offer, etc.
     app.include_router(webrtc_router, prefix="/webrtc")
     WEBRTC_ROUTER_LOADED = True
+
+    # --- Compatibility layer ---
+    # In some deployed revisions the underlying router still carried an internal
+    # '/webrtc' prefix, yielding effective paths like /webrtc/webrtc/ping.
+    # The production JS client calls /webrtc/ping, /webrtc/token, /webrtc/ice_config, /webrtc/offer.
+    # To avoid breaking older images (or double-prefix drift during hot reload),
+    # expose lightweight pass-through wrappers at the expected single-prefix paths
+    # ONLY if those paths are currently missing (best-effort). Since FastAPI does
+    # not provide a simple public API to query registered routes before definition
+    # without introspection, we always register wrappers; duplicates are avoided
+    # because underlying double-prefixed versions have different paths.
+    from typing import Optional as _Opt
+    from fastapi import Body as _Body, Header as _Header
+    import inspect as _inspect
+    
+    try:  # pragma: no cover - defensive
+        # Import underlying handlers for direct reuse
+        from webrtc_server import webrtc_ping as _rt_webrtc_ping, _ice_configuration as _rt_ice_conf, webrtc_offer as _rt_webrtc_offer, _mint_token as _rt_mint_token  # type: ignore
+    except Exception:  # noqa: BLE001
+        _rt_webrtc_ping = None  # type: ignore
+        _rt_ice_conf = None  # type: ignore
+        _rt_webrtc_offer = None  # type: ignore
+        _rt_mint_token = None  # type: ignore
+
+    @app.get("/webrtc/ping")
+    async def _compat_webrtc_ping():  # type: ignore
+        if _rt_webrtc_ping:
+            return await _rt_webrtc_ping()  # type: ignore
+        return {"router": False, "error": "webrtc_ping unavailable"}
+
+    @app.get("/webrtc/ice_config")
+    async def _compat_webrtc_ice_config():  # type: ignore
+        if _rt_ice_conf:
+            cfg = _rt_ice_conf()  # returns RTCConfiguration
+            # Convert to serializable form similar to original endpoint
+            servers = []
+            for s in getattr(cfg, 'iceServers', []) or []:
+                entry = {"urls": s.urls}
+                if getattr(s, 'username', None):
+                    entry["username"] = s.username
+                if getattr(s, 'credential', None):
+                    entry["credential"] = s.credential
+                servers.append(entry)
+            return {"iceServers": servers}
+        return {"iceServers": []}
+
+    @app.get("/webrtc/token")
+    async def _compat_webrtc_token():  # type: ignore
+        if _rt_mint_token and WEBRTC_ROUTER_LOADED:
+            try:
+                return {"token": _rt_mint_token()}
+            except Exception as e:  # noqa: BLE001
+                return {"error": str(e)}
+        return {"error": "token_unavailable"}
+
+    @app.post("/webrtc/offer")
+    async def _compat_webrtc_offer(
+        offer: dict = _Body(...),
+        x_api_key: _Opt[str] = _Header(default=None, alias="x-api-key"),
+        x_auth_token: _Opt[str] = _Header(default=None, alias="x-auth-token"),
+    ):  # type: ignore
+        if _rt_webrtc_offer:
+            return await _rt_webrtc_offer(offer=offer, x_api_key=x_api_key, x_auth_token=x_auth_token)  # type: ignore
+        raise HTTPException(status_code=503, detail="WebRTC offer handler unavailable")
 except Exception as e:  # pragma: no cover
     WEBRTC_IMPORT_ERROR = str(e)
     from fastapi import HTTPException as _HTTPException
