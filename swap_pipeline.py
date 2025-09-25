@@ -59,6 +59,8 @@ class FaceSwapPipeline:
             'frames_no_faces': 0,
             'total_faces_detected': 0,
             'total_faces_swapped': 0,
+            'swap_failures': 0,
+            'cached_face_reuses': 0,
             # Brightness / quality tracking
             'frames_low_brightness': 0,
             'brightness_last': None,
@@ -102,6 +104,10 @@ class FaceSwapPipeline:
         self._e2e_hist: List[float] = []
         # Track model file actually loaded for diagnostics
         self.inswapper_model_path: str | None = None
+        # Resource monitoring
+        self._gpu_memory_warning_threshold = float(os.getenv('MIRAGE_GPU_MEMORY_WARN_GB', '0.5'))
+        self._last_memory_check = 0
+        self._memory_check_interval = 50  # frames between GPU memory checks
         # Periodic structured logging interval (in frames) for runtime diagnostics
         try:
             # Default every 120 frames unless explicitly disabled (roughly ~4s at 30fps)
@@ -117,29 +123,56 @@ class FaceSwapPipeline:
         """
         if not self.log_interval or self.log_interval < 1:
             return
-        frames = self._stats.get('frames') or 0
+        frames = self._stats['frames']
         if frames == 0 or (frames % self.log_interval) != 0:
             return
+        
+        # Batch access to avoid repeated dict lookups
         s = self._stats
-        msg_parts = [
-            f"frames={s.get('frames')}",
-            f"swap_last={s.get('swap_faces_last')}",
-            f"swapped_total={s.get('total_faces_swapped')}",
-            f"faces_detected_total={s.get('total_faces_detected')}",
-            f"no_face_frames={s.get('frames_no_faces')}",
-            f"lat_ms_last={s.get('last_latency_ms'):.1f}" if s.get('last_latency_ms') is not None else "lat_ms_last=None",
-            f"lat_ms_avg={s.get('avg_latency_ms'):.1f}" if s.get('avg_latency_ms') is not None else "lat_ms_avg=None",
+        lat_last = s['last_latency_ms']
+        lat_avg = s['avg_latency_ms'] 
+        brightness = s['brightness_last']
+        similarity = s['last_primary_similarity']
+        
+        # Pre-format numbers to avoid repeated formatting in join
+        parts = [
+            f"frames={frames}",
+            f"swap_last={s['swap_faces_last']}",
+            f"swapped_total={s['total_faces_swapped']}",
+            f"detected_total={s['total_faces_detected']}",
+            f"no_face_frames={s['frames_no_faces']}",
+            f"cache_reuses={s['cached_face_reuses']}",
+            f"swap_failures={s['swap_failures']}",
+            f"lat_ms_last={lat_last:.1f}" if lat_last is not None else "lat_ms_last=None",
+            f"lat_ms_avg={lat_avg:.1f}" if lat_avg is not None else "lat_ms_avg=None",
             f"e2e_ms_last={self._last_e2e_ms:.1f}" if self._last_e2e_ms is not None else "e2e_ms_last=None",
-            f"brightness_last={s.get('brightness_last'):.1f}" if s.get('brightness_last') is not None else "brightness_last=None",
-            f"low_brightness_frames={s.get('frames_low_brightness')}",
-            f"primary_sim={s.get('last_primary_similarity'):.3f}" if s.get('last_primary_similarity') is not None else "primary_sim=None",
-            f"early_uninit={s.get('early_uninitialized')}",
-            f"early_no_source={s.get('early_no_source')}",
-            f"cf_enhanced={s.get('enhanced_frames')}",
-            f"cf_err={self.codeformer_error}" if self.codeformer_error else "cf_err=None",
-            f"providers={getattr(self, '_active_providers', None)}",
+            f"brightness_last={brightness:.1f}" if brightness is not None else "brightness_last=None",
+            f"low_brightness_frames={s['frames_low_brightness']}",
+            f"primary_sim={similarity:.3f}" if similarity is not None else "primary_sim=None",
+            f"early_uninit={s['early_uninitialized']}",
+            f"early_no_source={s['early_no_source']}",
+            f"cf_enhanced={s['enhanced_frames']}",
         ]
-        logger.info("pipeline_stats " + ' '.join(msg_parts))
+        
+        if self.codeformer_error:
+            parts.append(f"cf_err={self.codeformer_error}")
+        
+        logger.info("pipeline_stats " + ' '.join(parts))
+
+    def _check_gpu_memory(self):
+        """Monitor GPU memory usage to detect resource exhaustion early"""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+                reserved_gb = torch.cuda.memory_reserved() / (1024**3)
+                if allocated_gb > self._gpu_memory_warning_threshold:
+                    logger.warning(f"High GPU memory usage: allocated={allocated_gb:.2f}GB reserved={reserved_gb:.2f}GB")
+                    return False
+                return True
+        except Exception:
+            pass
+        return True  # Assume OK if we can't check
 
     def initialize(self):
         if self.initialized:
@@ -393,30 +426,57 @@ class FaceSwapPipeline:
                 pass
         faces = self.app.get(det_input)
         self._last_faces_cache = faces
-        if not faces:
+        no_detection = not faces
+        if no_detection:
             # Attempt temporal reuse of last successful face if within ttl
             if self._cached_face is not None and self._cached_face_age < self.face_cache_ttl:
                 faces = [self._cached_face]
                 self._cached_face_age += 1
+                if self.swap_debug:
+                    logger.debug(f'process_frame: reusing cached face (age={self._cached_face_age})')
             else:
                 self._cached_face = None
                 self._cached_face_age = 0
-            if self.swap_debug:
-                logger.debug('process_frame: no faces detected in incoming frame')
-            self._record_latency(time.time() - t0)
-            self._stats['swap_faces_last'] = 0
-            self._stats['frames_no_faces'] += 1
-            # Count processed frame even if no faces detected
-            self._stats['frames'] += 1
-            self._frame_index += 1
-            return frame
-        # Accumulate total faces detected (pre top-N filter)
-        self._stats['total_faces_detected'] += len(faces)
+                if self.swap_debug:
+                    logger.debug('process_frame: no faces detected, no valid cache')
+                self._record_latency(time.time() - t0)
+                self._stats['swap_faces_last'] = 0
+                self._stats['frames_no_faces'] += 1
+                self._stats['frames'] += 1
+                self._frame_index += 1
+                self._log_periodic()
+                return frame
+        # Track if we used cached face and accumulate total faces detected
+        if no_detection and faces:  # faces populated from cache
+            self._stats['cached_face_reuses'] += 1
+        elif faces:  # fresh detection
+            self._stats['total_faces_detected'] += len(faces)
+        
+        # Apply face size filter if enabled
+        if faces and self.face_min_size > 0:
+            def _area(face):
+                x1,y1,x2,y2 = face.bbox.astype(int)
+                return (x2-x1)*(y2-y1)
+            
+            filtered_faces = []
+            for face in faces:
+                x1,y1,x2,y2 = face.bbox.astype(int)
+                width, height = x2-x1, y2-y1
+                if min(width, height) >= self.face_min_size:
+                    filtered_faces.append(face)
+            faces = filtered_faces
+            
         # Sort faces by area and keep top-N
-        def _area(face):
-            x1,y1,x2,y2 = face.bbox.astype(int)
-            return (x2-x1)*(y2-y1)
-        faces.sort(key=_area, reverse=True)
+        if faces:
+            def _area(face):
+                x1,y1,x2,y2 = face.bbox.astype(int)
+                return (x2-x1)*(y2-y1)
+            faces.sort(key=_area, reverse=True)
+        
+        # Periodic GPU memory check
+        if self._frame_index > 0 and (self._frame_index % self._memory_check_interval) == 0:
+            if not self._check_gpu_memory():
+                logger.warning("GPU memory pressure detected - performance may degrade")
         out = frame
         count = 0
         similarities: List[float] = []
@@ -445,12 +505,13 @@ class FaceSwapPipeline:
                 # If re-enabled in future, we must recompute detection landmarks on the upscaled ROI.
                 try:
                     out = self.swapper.get(out, f, self.source_face, paste_back=True)
-                except Exception:
-                    # Fallback: attempt again (rarely helps, mostly for logging symmetry)
-                    out = self.swapper.get(out, f, self.source_face, paste_back=True)
-                count += 1
+                    count += 1
+                except Exception as e:
+                    self._stats['swap_failures'] += 1
+                    logger.debug(f"Swap failed for face {idx}: {e}")
             except Exception as e:
-                logger.debug(f"Swap failed for face: {e}")
+                self._stats['swap_failures'] += 1
+                logger.debug(f"Face processing failed for face {idx}: {e}")
         self._stats['total_faces_swapped'] += count
         # Cache first face for reuse
         if faces:
@@ -560,6 +621,50 @@ class FaceSwapPipeline:
     # Backwards compatibility for earlier server expecting process_video_frame
     def process_video_frame(self, frame: np.ndarray, frame_idx: int | None = None) -> np.ndarray:
         return self.process_frame(frame)
+    
+    def cleanup_resources(self):
+        """Clean up GPU resources to prevent hang on reconnection"""
+        try:
+            if hasattr(self, 'swapper') and self.swapper is not None:
+                # Force garbage collection of ONNX sessions
+                del self.swapper
+                self.swapper = None
+            
+            if hasattr(self, 'codeformer') and self.codeformer is not None:
+                del self.codeformer
+                self.codeformer = None
+                self.codeformer_loaded = False
+            
+            # Clear GPU cache if available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.info("GPU cache cleared during cleanup")
+            except Exception:
+                pass
+                
+            logger.info("Pipeline resources cleaned up")
+        except Exception as e:
+            logger.warning(f"Resource cleanup failed: {e}")
+    
+    def reset_for_reconnection(self):
+        """Reset pipeline state for clean reconnection without full reinitialization"""
+        # Clear cached face to prevent stale data
+        self._cached_face = None
+        self._cached_face_age = 0
+        
+        # Reset some stats but keep totals for debugging
+        self._stats['swap_faces_last'] = 0
+        self._stats['brightness_last'] = None
+        self._stats['last_primary_similarity'] = None
+        
+        # Clear latency histories to start fresh
+        self._lat_hist.clear()
+        self._e2e_hist.clear()
+        self._codeformer_lat_hist.clear()
+        
+        logger.info("Pipeline state reset for reconnection")
 
 # Singleton access similar to previous pattern
 _pipeline_instance: Optional[FaceSwapPipeline] = None
@@ -570,3 +675,16 @@ def get_pipeline() -> FaceSwapPipeline:
         _pipeline_instance = FaceSwapPipeline()
         _pipeline_instance.initialize()
     return _pipeline_instance
+
+def reset_pipeline():
+    """Reset pipeline for clean reconnection - called by WebRTC server on connection reset"""
+    global _pipeline_instance
+    if _pipeline_instance is not None:
+        _pipeline_instance.reset_for_reconnection()
+
+def cleanup_pipeline():
+    """Full cleanup for shutdown - releases GPU resources"""
+    global _pipeline_instance
+    if _pipeline_instance is not None:
+        _pipeline_instance.cleanup_resources()
+        _pipeline_instance = None
