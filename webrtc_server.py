@@ -1206,3 +1206,4 @@ if add_connection_monitoring is not None:
         add_connection_monitoring(router, _get_peer_state)
     except Exception:
         pass
+# Force rebuild Thu Sep 25 13:03:20 EDT 2025
