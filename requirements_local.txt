@@ -1,0 +1,18 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+aiortc==1.6.0
+websockets==11.0.3
+numpy==1.24.4
+opencv-python==4.8.1.78
+Pillow==10.0.1
+insightface==0.7.3
+basicsr==1.4.2
+timm==0.9.12
+python-multipart==0.0.9
+av==11.0.0
+psutil==5.9.8
+huggingface-hub==0.24.5
+onnx==1.16.1
+# Use GPU build of ONNX Runtime; required for CUDAExecutionProvider on A10G
+torch==2.1.2
+facexlib==0.3.0

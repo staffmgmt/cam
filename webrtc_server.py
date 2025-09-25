@@ -375,15 +375,33 @@ class IncomingVideoTrack(MediaStreamTrack):
         self._last_processed: Optional[np.ndarray] = None
         self._processing_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        # Latency / timing metrics
+        self._capture_ts: Optional[float] = None
+        self._last_latency_ms: Optional[float] = None
+        self._avg_latency_ms: Optional[float] = None
+        self._lat_hist: list[float] = []
+        self._queue_wait_last_ms: Optional[float] = None
+        self._queue_wait_hist: list[float] = []
+        self._frames_passthrough = 0
+        self._frames_processed = 0
+        self._frames_dropped = 0
+        self._placeholder_active = True
+        self._sync_if_idle = os.getenv('MIRAGE_SYNC_IF_IDLE','1').lower() in ('1','true','yes','on')
+        self._pts_origin: Optional[float] = None  # monotonic origin
+        self._last_sent_pts: Optional[int] = None
+        self._time_base = (1, 90000)  # 90kHz typical video clock
 
     async def recv(self):  # type: ignore[override]
         frame = await self.track.recv()
         self.frame_id += 1
+        capture_t = time.time()
+        if self._pts_origin is None:
+            self._pts_origin = capture_t
         # Convert to numpy BGR for pipeline
         img = frame.to_ndarray(format="bgr24")
         h, w, _ = img.shape
         proc_input = img
-        # Optionally downscale for processing to cap latency (configurable)
+        # Optional downscale (same as prior)
         try:
             max_dim_cfg = int(os.getenv('MIRAGE_PROC_MAX_DIM', '512') or '512')
             if max_dim_cfg < 64:
@@ -398,51 +416,96 @@ class IncomingVideoTrack(MediaStreamTrack):
                 proc_input = cv2.resize(img, (max(1, scale_w), max(1, scale_h)))
         except Exception as e:
             logger.debug(f"Video downscale skip: {e}")
-        # Schedule background processing to avoid blocking recv()
-        async def _process_async(inp: np.ndarray, expected_size: tuple[int, int], fid: int):
+
+        expected_size = (w, h)
+        processed: Optional[np.ndarray] = None
+
+        # Hybrid processing: inline if no background task running OR sync flag set; else schedule
+        if self._sync_if_idle and (self._processing_task is None):
+            t_q_start = time.time()
             try:
-                logger.info(f"Processing video frame {fid}, input shape: {inp.shape}")
-                out_small = self.pipeline.process_video_frame(inp, fid)
-                logger.info(f"Pipeline returned frame shape: {out_small.shape if out_small is not None else 'None'}")
-                if out_small is None:
-                    logger.warning(f"Pipeline returned None for frame {fid}")
-                    return
-                if (out_small.shape[1], out_small.shape[0]) != expected_size:
-                    out = cv2.resize(out_small, expected_size)
-                    logger.info(f"Resized frame from {out_small.shape[:2]} to {expected_size}")
+                out_small = self.pipeline.process_video_frame(proc_input, self.frame_id)
+                if out_small is not None and (out_small.shape[1], out_small.shape[0]) != expected_size:
+                    processed = cv2.resize(out_small, expected_size)
                 else:
-                    out = out_small
-                async with self._lock:
-                    self._last_processed = out
-                    logger.info(f"Stored processed frame {fid}, shape: {out.shape}")
+                    processed = out_small if out_small is not None else img
+                self._queue_wait_last_ms = (time.time() - t_q_start) * 1000.0  # inclusive (no wait, pure proc)
+                self._queue_wait_hist.append(self._queue_wait_last_ms)
+                if len(self._queue_wait_hist) > 300:
+                    self._queue_wait_hist.pop(0)
+                self._frames_processed += 1
             except Exception as ex:
-                logger.error(f"Video processing error(bg): {ex}")
-            finally:
-                self._processing_task = None
+                logger.debug(f"inline processing error: {ex}")
+                processed = img
+        else:
+            # Background path
+            if self._processing_task is None:
+                async def _process_async(inp: np.ndarray, expected_size: tuple[int,int], fid: int, enqueue_t: float):
+                    try:
+                        out_small = self.pipeline.process_video_frame(inp, fid)
+                        out = out_small
+                        if out_small is not None and (out_small.shape[1], out_small.shape[0]) != expected_size:
+                            out = cv2.resize(out_small, expected_size)
+                        elif out is None:
+                            out = inp  # fallback
+                        async with self._lock:
+                            self._last_processed = out
+                        q_wait = (time.time() - enqueue_t) * 1000.0
+                        self._queue_wait_last_ms = q_wait
+                        self._queue_wait_hist.append(q_wait)
+                        if len(self._queue_wait_hist) > 300:
+                            self._queue_wait_hist.pop(0)
+                        self._frames_processed += 1
+                    except Exception as ex:
+                        logger.debug(f"video processing error(bg): {ex}")
+                    finally:
+                        self._processing_task = None
+                self._processing_task = asyncio.create_task(_process_async(proc_input, expected_size, self.frame_id, time.time()))
+            # Use last processed snapshot; count passthrough if not yet available
+            async with self._lock:
+                if self._last_processed is not None:
+                    processed = self._last_processed
+                else:
+                    processed = img
+                    self._frames_passthrough += 1
+                    # We'll consider this frame 'dropped' re: processing freshness if a task already running
+                    if self._processing_task is not None:
+                        self._frames_dropped += 1
 
-        expected = (w, h)
-        if self._processing_task is None:
-            # Only run one processing task at a time; drop older frames
-            self._processing_task = asyncio.create_task(_process_async(proc_input, expected, self.frame_id))
+        # Metrics update
+        proc_latency_ms = (time.time() - capture_t) * 1000.0
+        self._last_latency_ms = proc_latency_ms
+        self._lat_hist.append(proc_latency_ms)
+        if len(self._lat_hist) > 300:
+            self._lat_hist.pop(0)
+        self._avg_latency_ms = float(np.mean(self._lat_hist)) if self._lat_hist else None
 
-        # Use last processed if available, else pass-through
-        async with self._lock:
-            processed = self._last_processed if self._last_processed is not None else img
-            mode = 'processed' if self._last_processed is not None else 'passthrough'
-        logger.info(f"Frame {self.frame_id}: using {mode} frame, shape: {processed.shape}")
+        # Placeholder becomes inactive as soon as we emit a frame post-first capture
+        if self._placeholder_active:
+            self._placeholder_active = False
 
-        # Rebase timestamps to a clean monotonic sequence to avoid decoder stall if processing lagged
+        # Timestamp handling: derive pts from capture time relative to origin on a 90kHz clock
+        try:
+            clock_rate = 90000
+            rel_sec = capture_t - (self._pts_origin or capture_t)
+            pts = int(rel_sec * clock_rate)
+            # Guard against monotonic regressions
+            if self._last_sent_pts is not None and pts <= self._last_sent_pts:
+                pts = self._last_sent_pts + int(clock_rate / 30)  # assume ~30fps minimal increment
+            self._last_sent_pts = pts
+        except Exception:
+            pts = frame.pts if frame.pts is not None else 0
+
         import av as _av
         vframe = _av.VideoFrame.from_ndarray(processed, format="bgr24")
-        # Provide new pts/time_base using VideoStreamTrack helper (borrow from OutboundVideoTrack semantics)
-        try:
-            pts, time_base = await OutboundVideoTrack().next_timestamp()  # ephemeral instance just for sequencing
-            vframe.pts = pts
-            vframe.time_base = time_base
-        except Exception:
-            # Fallback to original timing
-            vframe.pts = frame.pts
-            vframe.time_base = frame.time_base
+        vframe.pts = pts
+        vframe.time_base = _av.time_base.TimeBase(num=1, den=90000) if hasattr(_av, 'time_base') else frame.time_base
+        if (self.frame_id % 120) == 0:
+            logger.debug(
+                f"vid frame={self.frame_id} inline={self._sync_if_idle and self._processing_task is None} "
+                f"proc_ms={proc_latency_ms:.1f} avg_ms={self._avg_latency_ms:.1f if self._avg_latency_ms else None} "
+                f"queue_wait_last={self._queue_wait_last_ms} passthrough={self._frames_passthrough} dropped={self._frames_dropped}"
+            )
         return vframe
 
 
@@ -871,6 +934,35 @@ async def frame_counter():
         return {"active": True, "frames_emitted": count}
     except Exception as e:
         return {"active": False, "error": str(e)}
+
+@router.get("/pipeline_stats")
+async def pipeline_stats():
+    """Return merged swap pipeline stats and live video track latency metrics."""
+    try:
+        pipeline = get_pipeline()
+        base_stats = pipeline.get_performance_stats() if getattr(pipeline, 'loaded', False) else {}
+        # Attempt to locate the active IncomingVideoTrack via peer senders
+        track_stats = {}
+        try:
+            st = _peer_state
+            if st is not None:
+                pc = st.pc
+                for sender in pc.getSenders():
+                    tr = getattr(sender, 'track', None)
+                    if tr and isinstance(tr, MediaStreamTrack) and getattr(tr, 'kind', None) == 'video':
+                        # Heuristic: if it has our added attributes
+                        for attr in [
+                            '_last_latency_ms','_avg_latency_ms','_queue_wait_last_ms','_frames_passthrough',
+                            '_frames_processed','_frames_dropped','_placeholder_active'
+                        ]:
+                            if hasattr(tr, attr):
+                                track_stats[attr.lstrip('_')] = getattr(tr, attr)
+                        break
+        except Exception as e:
+            track_stats['error'] = f"track_stats: {e}" 
+        return {"pipeline": base_stats, "video_track": track_stats}
+    except Exception as e:
+        return {"error": str(e)}
 
 # Optional: connection monitoring endpoint for diagnostics
 if add_connection_monitoring is not None:

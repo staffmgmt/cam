@@ -82,6 +82,20 @@ class FaceSwapPipeline:
         self.low_brightness_threshold = float(os.getenv('MIRAGE_LOW_BRIGHTNESS_THRESH', '40'))
         # Similarity threshold for logging (cosine similarity typical range [-1,1])
         self.similarity_warn_threshold = float(os.getenv('MIRAGE_SIMILARITY_WARN', '0.15'))
+    # Temporal reuse configuration
+    self.face_cache_ttl = int(os.getenv('MIRAGE_FACE_CACHE_TTL', '5') or '5')  # frames
+    self._cached_face = None
+    self._cached_face_age = 0
+    # Aggressive blend toggle for visibility
+    self.aggressive_blend = os.getenv('MIRAGE_AGGRESSIVE_BLEND', '0').lower() in ('1','true','yes','on')
+    # Optional face ROI upscaling for tiny faces
+    self.face_min_size = int(os.getenv('MIRAGE_FACE_MIN_SIZE', '80') or '80')
+    self.face_upscale_factor = float(os.getenv('MIRAGE_FACE_UPSCALE', '1.6'))
+    # Detector preprocessing (CLAHE) low light
+    self.det_clahe = os.getenv('MIRAGE_DET_CLAHE', '1').lower() in ('1','true','yes','on')
+    # End-to-end latency markers
+    self._last_e2e_ms = None
+    self._e2e_hist: List[float] = []
 
     def initialize(self):
         if self.initialized:
@@ -309,6 +323,7 @@ class FaceSwapPipeline:
         return pcm_bytes
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
+        frame_in_ts = time.time()
         if not self.initialized or self.swapper is None or self.app is None:
             self._stats['early_uninitialized'] += 1
             if self.swap_debug:
@@ -336,9 +351,27 @@ class FaceSwapPipeline:
                         logger.debug(f'Applied brightness compensation gain={gain:.2f} (brightness={brightness:.1f})')
         except Exception:
             pass
-        faces = self.app.get(frame)
+        # Detector preprocessing path for improved low-light detect
+        det_input = frame
+        if self.det_clahe:
+            try:
+                gray_det = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if float(np.mean(gray_det)) < (self.low_brightness_threshold + 15):
+                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                    eq = clahe.apply(gray_det)
+                    det_input = cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
+            except Exception:
+                pass
+        faces = self.app.get(det_input)
         self._last_faces_cache = faces
         if not faces:
+            # Attempt temporal reuse of last successful face if within ttl
+            if self._cached_face is not None and self._cached_face_age < self.face_cache_ttl:
+                faces = [self._cached_face]
+                self._cached_face_age += 1
+            else:
+                self._cached_face = None
+                self._cached_face_age = 0
             if self.swap_debug:
                 logger.debug('process_frame: no faces detected in incoming frame')
             self._record_latency(time.time() - t0)
@@ -378,11 +411,36 @@ class FaceSwapPipeline:
                             logger.debug(f'Low similarity primary face sim={sim:.3f}')
                 except Exception:
                     pass
-                out = self.swapper.get(out, f, self.source_face, paste_back=True)
+                # Upscale small face region before swapping to reduce warping artifacts
+                try:
+                    x1,y1,x2,y2 = f.bbox.astype(int)
+                    fh = y2 - y1; fw = x2 - x1
+                    if min(fh, fw) < self.face_min_size:
+                        # Extract padded ROI, upscale, run swapper, then downscale
+                        pad = int(0.15 * max(fh, fw))
+                        h, w = out.shape[:2]
+                        rx1 = max(0, x1 - pad); ry1 = max(0, y1 - pad)
+                        rx2 = min(w, x2 + pad); ry2 = min(h, y2 + pad)
+                        roi = out[ry1:ry2, rx1:rx2]
+                        if roi.size > 0:
+                            big = cv2.resize(roi, None, fx=self.face_upscale_factor, fy=self.face_upscale_factor, interpolation=cv2.INTER_CUBIC)
+                            swapped_big = self.swapper.get(big, f, self.source_face, paste_back=False)
+                            swapped_small = cv2.resize(swapped_big, (rx2-rx1, ry2-ry1), interpolation=cv2.INTER_LINEAR)
+                            out[ry1:ry2, rx1:rx2] = swapped_small
+                        else:
+                            out = self.swapper.get(out, f, self.source_face, paste_back=True)
+                    else:
+                        out = self.swapper.get(out, f, self.source_face, paste_back=True)
+                except Exception:
+                    out = self.swapper.get(out, f, self.source_face, paste_back=True)
                 count += 1
             except Exception as e:
                 logger.debug(f"Swap failed for face: {e}")
         self._stats['total_faces_swapped'] += count
+        # Cache first face for reuse
+        if faces:
+            self._cached_face = faces[0]
+            self._cached_face_age = 0
         # Optional debug overlay for visual confirmation
         if count > 0 and os.getenv('MIRAGE_DEBUG_OVERLAY', '0').lower() in ('1','true','yes','on'):
             try:
@@ -433,6 +491,11 @@ class FaceSwapPipeline:
         self._stats['swap_faces_last'] = count
         self._stats['frames'] += 1
         self._frame_index += 1
+        # End-to-end latency including pre-detection + swap path
+        self._last_e2e_ms = (time.time() - frame_in_ts) * 1000.0
+        self._e2e_hist.append(self._last_e2e_ms)
+        if len(self._e2e_hist) > 200:
+            self._e2e_hist.pop(0)
         return out
 
     def _record_latency(self, dt: float):
@@ -455,6 +518,8 @@ class FaceSwapPipeline:
             codeformer_avg_latency_ms=cf_avg,
             max_faces=self.max_faces,
             debug_overlay=os.getenv('MIRAGE_DEBUG_OVERLAY', '0'),
+            e2e_latency_ms=self._last_e2e_ms,
+            e2e_latency_avg_ms=(float(np.mean(self._e2e_hist)) if self._e2e_hist else None),
         )
         # Provider diagnostics (best-effort)
         try:  # pragma: no cover

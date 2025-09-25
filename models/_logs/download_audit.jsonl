@@ -1,0 +1,2 @@
+{"ts": "2025-09-25T00:33:19Z", "event": "start", "tag": "downloader"}
+{"ts": "2025-09-25T00:35:16Z", "event": "download_ok", "tag": "downloader", "model": "inswapper", "path": "/Users/macbookpro/Desktop/mirage/models/inswapper/inswapper_128_fp16.onnx"}
