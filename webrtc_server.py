@@ -844,12 +844,21 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         except Exception:
             pass
         # Immediately close failed connections to prevent resource leaks
-        if pc.connectionState == "failed":
+        if pc.connectionState in ("failed", "disconnected", "closed"):
             try:
-                await pc.close()
-                logger.info("Closed failed peer connection")
-            except Exception:
-                pass
+                # Clean pipeline resources on connection failure/close
+                from swap_pipeline import reset_pipeline
+                reset_pipeline()
+                logger.info("Pipeline reset due to connection state change")
+            except Exception as e:
+                logger.warning(f"Pipeline reset failed on state change: {e}")
+            
+            if pc.connectionState == "failed":
+                try:
+                    await pc.close()
+                    logger.info("Closed failed peer connection")
+                except Exception:
+                    pass
 
     @pc.on("iceconnectionstatechange")
     async def on_ice_state_change():
@@ -959,6 +968,12 @@ async def cleanup_peer(x_api_key: Optional[str] = Header(default=None), x_auth_t
             await _peer_state.pc.close()
         except Exception:
             pass
+        # Clean up pipeline resources to prevent hang on reconnection
+        try:
+            from swap_pipeline import reset_pipeline
+            reset_pipeline()
+        except Exception as e:
+            logger.warning(f"Pipeline reset failed: {e}")
         _peer_state = None
         return {"status": "closed"}
 
