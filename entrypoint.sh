@@ -19,9 +19,7 @@ fi
 if [[ $PERSIST_DEFAULT -eq 1 ]]; then
   PERSIST_ROOT="/data/mirage_models"
   mkdir -p "$PERSIST_ROOT" || true
-  # If /app/models exists and is not a symlink, migrate its contents (first run)
   if [[ -d /app/models && ! -L /app/models ]]; then
-    # Only migrate if persistent dir is empty (avoid overwriting existing cache)
     if [[ -z "$(ls -A "$PERSIST_ROOT" 2>/dev/null)" ]]; then
       echo "[entrypoint] Migrating existing /app/models/* -> $PERSIST_ROOT (first persistent run)"
       shopt -s dotglob nullglob
@@ -30,19 +28,40 @@ if [[ $PERSIST_DEFAULT -eq 1 ]]; then
       done
       shopt -u dotglob nullglob
     fi
-    rm -rf /app/models
-    ln -s "$PERSIST_ROOT" /app/models
-    echo "[entrypoint] Symlinked /app/models -> $PERSIST_ROOT"
+    if rm -rf /app/models 2>/dev/null; then
+      if ln -s "$PERSIST_ROOT" /app/models 2>/dev/null; then
+        echo "[entrypoint] Symlinked /app/models -> $PERSIST_ROOT"
+        STORAGE_MODE="persistent"
+        STORAGE_PATH="$PERSIST_ROOT"
+      else
+        echo "[entrypoint] WARNING: symlink creation failed (permission?). Falling back to ephemeral mode." >&2
+        mkdir -p /app/models || true
+        STORAGE_MODE="ephemeral"
+        STORAGE_PATH="/app/models"
+      fi
+    else
+      echo "[entrypoint] WARNING: cannot remove /app/models (permission denied). Using existing directory as ephemeral." >&2
+      STORAGE_MODE="ephemeral"
+      STORAGE_PATH="/app/models"
+    fi
   elif [[ -L /app/models ]]; then
     echo "[entrypoint] /app/models already symlinked"
+    STORAGE_MODE="persistent"
+    STORAGE_PATH="$PERSIST_ROOT"
   else
-    # Create then symlink if missing
+    # Attempt to create symlink fresh
     rm -rf /app/models 2>/dev/null || true
-    ln -s "$PERSIST_ROOT" /app/models
-    echo "[entrypoint] Initialized persistent symlink /app/models -> $PERSIST_ROOT"
+    if ln -s "$PERSIST_ROOT" /app/models 2>/dev/null; then
+      echo "[entrypoint] Initialized persistent symlink /app/models -> $PERSIST_ROOT"
+      STORAGE_MODE="persistent"
+      STORAGE_PATH="$PERSIST_ROOT"
+    else
+      echo "[entrypoint] WARNING: cannot create symlink; falling back to ephemeral /app/models" >&2
+      mkdir -p /app/models || true
+      STORAGE_MODE="ephemeral"
+      STORAGE_PATH="/app/models"
+    fi
   fi
-  STORAGE_MODE="persistent"
-  STORAGE_PATH="$PERSIST_ROOT"
 else
   mkdir -p /app/models || true
   STORAGE_MODE="ephemeral"
