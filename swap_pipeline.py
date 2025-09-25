@@ -52,7 +52,13 @@ class FaceSwapPipeline:
             'last_latency_ms': None,
             'avg_latency_ms': None,
             'swap_faces_last': 0,
-            'enhanced_frames': 0
+            'enhanced_frames': 0,
+            # New diagnostic counters
+            'early_no_source': 0,
+            'early_uninitialized': 0,
+            'frames_no_faces': 0,
+            'total_faces_detected': 0,
+            'total_faces_swapped': 0
         }
         self._lat_hist: List[float] = []
         self._codeformer_lat_hist: List[float] = []
@@ -288,10 +294,12 @@ class FaceSwapPipeline:
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         if not self.initialized or self.swapper is None or self.app is None:
+            self._stats['early_uninitialized'] += 1
             if self.swap_debug:
                 logger.debug('process_frame: pipeline not fully initialized yet')
             return frame
         if self.source_face is None:
+            self._stats['early_no_source'] += 1
             if self.swap_debug:
                 logger.debug('process_frame: no source_face set yet')
             return frame
@@ -303,10 +311,13 @@ class FaceSwapPipeline:
                 logger.debug('process_frame: no faces detected in incoming frame')
             self._record_latency(time.time() - t0)
             self._stats['swap_faces_last'] = 0
+            self._stats['frames_no_faces'] += 1
             # Count processed frame even if no faces detected
             self._stats['frames'] += 1
             self._frame_index += 1
             return frame
+        # Accumulate total faces detected (pre top-N filter)
+        self._stats['total_faces_detected'] += len(faces)
         # Sort faces by area and keep top-N
         def _area(face):
             x1,y1,x2,y2 = face.bbox.astype(int)
@@ -320,6 +331,7 @@ class FaceSwapPipeline:
                 count += 1
             except Exception as e:
                 logger.debug(f"Swap failed for face: {e}")
+        self._stats['total_faces_swapped'] += count
         if self.swap_debug:
             logger.debug(f'process_frame: detected={len(faces)} swapped={count} stride={self.codeformer_frame_stride} apply_cf={count>0 and (self._frame_index % self.codeformer_frame_stride == 0)}')
         # CodeFormer stride / face-region logic
@@ -378,6 +390,7 @@ class FaceSwapPipeline:
             codeformer_frame_stride=self.codeformer_frame_stride,
             codeformer_face_only=self.codeformer_face_only,
             codeformer_avg_latency_ms=cf_avg,
+            max_faces=self.max_faces,
         )
         # Provider diagnostics (best-effort)
         try:  # pragma: no cover
