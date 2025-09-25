@@ -948,7 +948,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
     @pc.on("connectionstatechange")
     async def on_state_change():
-        global _peer_state
+        global _peer_state  # single global declaration for entire handler
         logger.info("Peer connection state: %s", pc.connectionState)
         try:
             if _peer_state is not None:
@@ -967,7 +967,6 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             
             # Clear global peer state to allow clean retry
             async with _peer_lock:
-                global _peer_state  # Explicit declaration for this block scope
                 if _peer_state is not None and _peer_state.pc == pc:
                     logger.info("Clearing global peer state due to connection failure")
                     # Clear outbound video source to prevent hanging on retry
