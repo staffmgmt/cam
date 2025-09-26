@@ -318,138 +318,63 @@ def _check_api_key(header_val: Optional[str], token_val: Optional[str] = None):
 
 
 def _ice_configuration() -> RTCConfiguration:
-    servers = []
-    turn_server_count = 0
-    stun_server_count = 0
+    """Build RTCConfiguration, preferring metered TURN, then static, then STUN.
     
-    # STUN servers (comma-separated)
-    for url in [u.strip() for u in STUN_URLS.split(',') if u.strip()]:
-        servers.append(RTCIceServer(urls=[url]))
-        stun_server_count += 1
-        
-    # Optional TURN (static)
-    if TURN_URL and TURN_USER and TURN_PASS:
-        for tur in [u.strip() for u in str(TURN_URL).split(',') if u.strip()]:
-            servers.append(RTCIceServer(urls=[tur], username=TURN_USER, credential=TURN_PASS))
-            turn_server_count += 1
-            
-    # Optional Metered.ca ephemeral TURN using API key
+    Includes a 5-second timeout for the metered fetch.
+    """
+    servers = []
+    
+    # 1. Try Metered Service (e.g., Twilio) with a timeout
     if METERED_API_KEY:
         try:
-            from urllib.request import urlopen
-            from urllib.parse import urlencode
-            import json as _json
-            # Global endpoint that returns iceServers list
-            url = f"https://global.relay.metered.ca/turn?{urlencode({'apiKey': METERED_API_KEY})}"
-            with urlopen(url, timeout=5) as resp:  # nosec - fixed provider URL
-                data = _json.loads(resp.read().decode('utf-8'))
-            ice_list = data.get('iceServers') or []
-            for s in ice_list:
-                urls = s.get('urls')
-                if not urls:
-                    continue
-                if isinstance(urls, str):
-                    urls = [urls]
-                username = s.get('username')
-                credential = s.get('credential')
-                servers.append(RTCIceServer(urls=urls, username=username, credential=credential))
-                turn_server_count += len([u for u in urls if u.startswith('turn')])
+            import httpx
+            logger.info("Fetching metered ICE servers...")
+            # Timeout set to 5s to avoid long hangs on unresponsive service
+            with httpx.Client(timeout=5.0) as client:
+                response = client.post(
+                    "https://api.metered.ca/api/v1/turn/credentials?apiKey=" + METERED_API_KEY
+                )
+                response.raise_for_status()
+                servers.extend([RTCIceServer(**s) for s in response.json()])
+                logger.info(f"Successfully fetched {len(servers)} metered ICE servers.")
         except Exception as e:
             logger.warning(f"Metered ICE fetch failed: {e} - This may cause connection failures in restricted networks")
-            
-    # Optionally filter to TLS/TCP-only TURN to succeed behind strict firewalls
-    def _is_tls_tcp(url: str) -> bool:
-        u = url.lower()
-        return u.startswith('turns:') or 'transport=tcp' in u or ':443' in u
 
-    if TURN_TLS_ONLY:
-        filtered = []
-        original_turn_count = turn_server_count
-        turn_server_count = 0
-        for s in servers:
-            urls = s.urls if isinstance(s.urls, list) else [s.urls]
-            keep_urls = [u for u in urls if _is_tls_tcp(u)]
-            if keep_urls:
-                filtered.append(RTCIceServer(urls=keep_urls, username=getattr(s,'username',None), credential=getattr(s,'credential',None)))
-                turn_server_count += len([u for u in keep_urls if u.startswith('turn')])
-        if filtered:
-            servers = filtered
-            logger.info(f"TLS_ONLY filter: kept {turn_server_count}/{original_turn_count} TURN servers")
-        else:
-            # As a safety, if nothing matched, keep originals
-            logger.warning("TLS_ONLY filter removed all TURN servers - keeping originals")
-            turn_server_count = original_turn_count
-    
-    # Log server availability for connection failure diagnostics
-    if turn_server_count == 0:
-        logger.warning("No TURN servers configured - NAT traversal will likely fail in restricted networks")
-    else:
-        logger.info(f"ICE configuration: {stun_server_count} STUN, {turn_server_count} TURN servers")
+    # 2. Fallback to static TURN if metered fetch failed or wasn't configured
+    if not any('turn:' in s.urls for s in servers) and TURN_URL and TURN_USER and TURN_PASS:
+        logger.info("No metered TURN servers loaded, adding static TURN configuration.")
+        servers.append(
+            RTCIceServer(
+                urls=TURN_URL,
+                username=TURN_USER,
+                credential=TURN_PASS
+            )
+        )
 
-    # Configure ICE transport policy
-    if FORCE_RELAY:
-        # Force all connections through TURN servers only
-        config = RTCConfiguration(iceServers=servers, iceTransportPolicy="relay")
-        logger.info("ICE transport policy: relay-only (FORCE_RELAY enabled)")
-        if turn_server_count == 0:
-            logger.error("FORCE_RELAY enabled but no TURN servers available - connections will fail")
-    else:
-        config = RTCConfiguration(iceServers=servers)
-        logger.info("ICE transport policy: all (direct + relay)")
-    
-    return config
+    # 3. Add public STUN servers if none are configured
+    if not servers or not any('stun:' in s.urls for s in servers):
+        logger.info("Adding default STUN servers.")
+        stun_server_urls = [s.strip() for s in STUN_URLS.split(',') if s.strip()]
+        if stun_server_urls:
+            servers.append(RTCIceServer(urls=stun_server_urls))
+
+    # 4. Asynchronously test TURN connectivity if any TURN servers are configured
+    if any('turn:' in s.urls for s in servers):
+        asyncio.create_task(_test_turn_connectivity(servers))
+
+    return RTCConfiguration(iceServers=servers)
 
 
-def _prefer_codec(sdp: str, kind: str, codec: str) -> str:
-    """Move payload types for the given codec to the front of the m-line.
-    Minimal SDP munging for preferring codecs (e.g., H264 or VP8).
-    """
+@router.on_event("startup")
+async def on_startup():
+    """Startup tasks: test TURN connectivity, etc."""
     try:
-        lines = sdp.splitlines()
-        # Map pt -> codec
-        pt_to_codec = {}
-        for ln in lines:
-            if ln.startswith('a=rtpmap:'):
-                try:
-                    rest = ln[len('a=rtpmap:'):]
-                    pt, enc = rest.split(' ', 1)
-                    codec_name = enc.split('/')[0].upper()
-                    pt_to_codec[pt] = codec_name
-                except Exception:
-                    pass
-        # Find m-line for kind
-        for i, ln in enumerate(lines):
-            if ln.startswith('m=') and kind in ln:
-                parts = ln.split(' ')
-                header = parts[:3]
-                pts = parts[3:]
-                preferred = [pt for pt in pts if pt_to_codec.get(pt, '') == codec.upper()]
-                others = [pt for pt in pts if pt not in preferred]
-                lines[i] = ' '.join(header + preferred + others)
-                break
-        return '\r\n'.join(lines) + '\r\n'
-    except Exception:
-        return sdp
-
-
-# Pipeline initialization lock to prevent concurrent init attempts
-_init_lock = asyncio.Lock()
-
-async def _ensure_pipeline_initialized():
-    """Initialize the pipeline if not already loaded."""
-    pipeline = get_pipeline()
-    try:
-        if not getattr(pipeline, "loaded", False):
-            async with _init_lock:
-                # Double-check after acquiring lock
-                if not getattr(pipeline, "loaded", False):
-                    init = getattr(pipeline, "initialize", None)
-                    if callable(init):
-                        result = init()
-                        if asyncio.iscoroutine(result):
-                            await result
+        # Initial TURN connectivity test (async)
+        ice_config = _ice_configuration()
+        if ice_config.iceServers:
+            asyncio.create_task(_test_turn_connectivity(ice_config.iceServers))
     except Exception as e:
-        logger.error(f"Pipeline init failed: {e}")
+        logger.warning(f"Startup tasks error: {e}")
 
 
 @dataclass
