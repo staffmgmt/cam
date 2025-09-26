@@ -2,6 +2,7 @@ import os
 import io
 import time
 import logging
+import sys
 from typing import Optional, Dict, Any, List
 
 import numpy as np
@@ -269,6 +270,14 @@ class FaceSwapPipeline:
         if not os.path.isfile(CODEFORMER_PATH):
             logger.warning(f"CodeFormer weight missing; skipping: {CODEFORMER_PATH}")
             return
+        repo_root = os.path.join('models', 'codeformer_repo')
+        try:
+            if self._ensure_repo_clone(repo_root):
+                for extra in (repo_root, os.path.join(repo_root, 'CodeFormer')):
+                    if os.path.isdir(extra) and extra not in sys.path:
+                        sys.path.insert(0, extra)
+        except Exception as clone_err:  # noqa: BLE001
+            logger.debug(f"CodeFormer repo clone/setup failed (continuing with installed packages): {clone_err}")
         try:
             import torch  # type: ignore
         except Exception:
