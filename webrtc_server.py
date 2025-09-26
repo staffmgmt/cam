@@ -1050,7 +1050,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
     @pc.on("connectionstatechange")
     async def on_state_change():
-        global _peer_state  # single global declaration for entire handler
+        global _peer_state, _last_peer_snapshot  # single global declaration for entire handler
         logger.info("Peer connection state: %s", pc.connectionState)
         try:
             if _peer_state is not None:
@@ -1071,6 +1071,25 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             async with _peer_lock:
                 if _peer_state is not None and _peer_state.pc == pc:
                     logger.info("Clearing global peer state due to connection failure")
+                    try:
+                        _peer_state.last_disconnect_reason = f"pc_state:{pc.connectionState}"
+                    except Exception:
+                        pass
+                    try:
+                        _last_peer_snapshot = {
+                            "event": "connectionstatechange",
+                            "state": pc.connectionState,
+                            "ice_state": getattr(pc, 'iceConnectionState', None),
+                            "received_video": getattr(_peer_state, 'received_video', False),
+                            "received_audio": getattr(_peer_state, 'received_audio', False),
+                            "incoming_frames": getattr(_peer_state, 'incoming_frames', 0),
+                            "incoming_first_frame_ts": getattr(_peer_state, 'incoming_first_frame_ts', None),
+                            "outbound_bind_method": getattr(_peer_state, 'outbound_bind_method', None),
+                            "outbound_sender_mid": getattr(_peer_state, 'outbound_sender_mid', None),
+                            "timestamp": time.time(),
+                        }
+                    except Exception:
+                        _last_peer_snapshot = {"event": "connectionstatechange", "state": pc.connectionState}
                     # Clear outbound video source to prevent hanging on retry
                     if _peer_state.outbound_video:
                         _peer_state.outbound_video.clear_source()

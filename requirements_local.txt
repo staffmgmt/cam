@@ -16,3 +16,4 @@ onnx==1.16.1
 # Use GPU build of ONNX Runtime; required for CUDAExecutionProvider on A10G
 torch==2.1.2
 facexlib==0.3.0
+httpx==0.27.0
