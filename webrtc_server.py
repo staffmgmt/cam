@@ -33,6 +33,7 @@ import hashlib
 import hmac
 import secrets as pysecrets
 import base64 as pybase64
+import random
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Header
@@ -91,6 +92,34 @@ def get_pipeline():  # type: ignore
         logger.error(f"swap_pipeline unavailable, using pass-through: {e}")
         _pipeline_singleton = _PassThroughPipeline()
     return _pipeline_singleton
+
+
+async def _ensure_pipeline_initialized() -> bool:
+    """Ensure the face swap pipeline is initialized.
+
+    This function was missing previously resulting in a NameError and a 500
+    response from /webrtc/offer before a peer connection could be created.
+    Initialization can be moderately heavy (model loads), so we offload it to
+    a thread executor to keep the event loop responsive.
+
+    Returns True if initialized (or already initialized), False on failure.
+    """
+    try:
+        pipe = get_pipeline()
+        if getattr(pipe, 'initialized', False):
+            return True
+        loop = asyncio.get_running_loop()
+        def _init_blocking():  # executed in thread
+            try:
+                pipe.initialize()
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Pipeline initialization error: {e}")
+                return False
+        return await loop.run_in_executor(None, _init_blocking)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.error(f"_ensure_pipeline_initialized failure: {e}")
+        return False
 
 # Router mounted by app with prefix "/webrtc"; declare here without its own prefix
 router = APIRouter(tags=["webrtc"])
@@ -363,6 +392,45 @@ def _ice_configuration() -> RTCConfiguration:
         asyncio.create_task(_test_turn_connectivity(servers))
 
     return RTCConfiguration(iceServers=servers)
+
+
+def _prefer_codec(sdp: str, media_type: str, codec: str) -> str:
+    """Very small helper to move the preferred codec to the front of the m-line.
+
+    This is a simplified, defensive implementation; if anything goes wrong we
+    just return the original SDP. Only used when PREFER_H264=1 to bias browser
+    selection toward H264 for better hardware decode compatibility on some
+    platforms (e.g., macOS Safari, older Chromium builds on low-power devices).
+    """
+    try:
+        lines = sdp.splitlines()
+        m_indices = [i for i,l in enumerate(lines) if l.startswith('m=') and media_type in l]
+        if not m_indices:
+            return sdp
+        # Find payload types for desired codec
+        codec_payloads = []
+        for i,l in enumerate(lines):
+            if l.startswith('a=rtpmap:') and codec.lower() in l.lower():
+                try:
+                    pt = l.split(':',1)[1].split()[0]
+                    if '/' in pt:
+                        pt = pt.split()[0]
+                    codec_payloads.append(pt)
+                except Exception:
+                    continue
+        if not codec_payloads:
+            return sdp
+        for mi in m_indices:
+            parts = lines[mi].split()
+            if len(parts) > 3:
+                header = parts[:3]
+                payloads = parts[3:]
+                # Stable ordering: preferred codec payloads first, then remaining
+                new_payloads = [p for p in payloads if p in codec_payloads] + [p for p in payloads if p not in codec_payloads]
+                lines[mi] = ' '.join(header + new_payloads)
+        return '\r\n'.join(lines) + '\r\n'
+    except Exception:
+        return sdp
 
 
 @router.on_event("startup")
@@ -749,8 +817,28 @@ class IncomingAudioTrack(MediaStreamTrack):
 
 @router.post("/offer")
 async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(default=None), x_auth_token: Optional[str] = Header(default=None)):
-    """Accept SDP offer and return SDP answer."""
+    """Accept SDP offer (from browser) and return SDP answer.
+
+    Instrumented with lightweight negotiation stage logging so we can pinpoint
+    where a 500 originates (outbound track setup, createAnswer, etc.). The
+    browser is *always* responsible for creating the *offer*; the server only
+    ever creates the *answer*. This endpoint performs no browser/client-side
+    JS; it strictly handles SDP, media track plumbing and pipeline binding.
+    """
     global _peer_state  # declare once at top to avoid 'used prior to global declaration'
+    negotiation_id = f"neg-{int(time.time()*1000)}-{random.randint(1000,9999)}"  # best-effort unique ID
+    DEBUG_NEG = os.getenv("MIRAGE_DEBUG_NEGOTIATION", "0").strip().lower() in {"1","true","yes","on"}
+
+    def stage(msg: str, level: str = "info"):
+        line = f"[{negotiation_id}] {msg}"
+        if level == "error":
+            logger.error(line)
+        elif level == "warning":
+            logger.warning(line)
+        else:
+            logger.info(line)
+
+    stage("offer_received")
     # If enforcement enabled, require a valid signed token; otherwise allow
     if REQUIRE_API_KEY:
         if not (x_auth_token and _verify_token(x_auth_token)):
@@ -760,25 +848,28 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
     async with _peer_lock:
         # Ensure pipeline is ready before wiring tracks
-        await _ensure_pipeline_initialized()
+        init_ok = await _ensure_pipeline_initialized()
+        if not init_ok:
+            stage("pipeline_init_failed", level="error")
+            raise HTTPException(status_code=500, detail="pipeline_init_failed")
         # Cleanup existing peer if present - critical for retry scenarios
         if _peer_state is not None:
             try:
                 await _peer_state.pc.close()
-                logger.info("Closed existing peer connection for new offer")
+                stage("previous_pc_closed")
             except Exception:
                 pass
             # Clear outbound video source from previous connection
             if _peer_state.outbound_video:
                 _peer_state.outbound_video.clear_source()
-                logger.info("Cleared outbound video source from previous connection")
+                stage("previous_outbound_video_cleared")
             # Reset pipeline state for clean reconnection
             try:
                 from swap_pipeline import reset_pipeline
                 reset_pipeline()
-                logger.info("Pipeline reset for new offer")
+                stage("pipeline_reset_for_new_offer")
             except Exception as e:
-                logger.warning(f"Pipeline reset failed during new offer: {e}")
+                stage(f"pipeline_reset_failed: {e}", level="warning")
             _peer_state = None
 
     ice_config = _ice_configuration()
@@ -975,8 +1066,9 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     # so we don't miss the initial 'track' events fired during setRemoteDescription.
     try:
         outbound_video = OutboundVideoTrack()
+        stage("outbound_video_constructed")
     except Exception as e:
-        logger.error(f"Failed to construct outbound video: {e}")
+        stage(f"outbound_video_construct_failed: {e}", level="error")
         raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
 
     @pc.on("track")
@@ -1000,6 +1092,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     # Add outbound video to ensure the answer includes a send m-line
     try:
         sender = pc.addTrack(outbound_video)
+        stage("outbound_video_added")
         try:
             params = sender.getParameters()
             if params and hasattr(params, 'encodings'):
@@ -1013,21 +1106,24 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         except Exception:
             pass
     except Exception as e:
-        logger.error(f"Failed to set up outbound video: {e}")
+        stage(f"outbound_video_add_failed: {e}", level="error")
         raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
 
     # Now apply the remote description (offer)
     try:
         desc = RTCSessionDescription(sdp=offer["sdp"], type=offer["type"])
         await pc.setRemoteDescription(desc)
+        stage("remote_description_set")
     except Exception as e:
+        stage(f"remote_description_failed: {e}", level="error")
         raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
     # Create answer with error surfacing
     try:
         answer = await pc.createAnswer()
+        stage("answer_created")
     except Exception as e:
-        logger.error(f"createAnswer error: {e}")
+        stage(f"createAnswer_failed: {e}", level="error")
         raise HTTPException(status_code=500, detail=f"createAnswer: {e}")
     # Avoid SDP munging to reduce negotiation fragility
     try:
@@ -1038,8 +1134,9 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             except Exception:
                 pass
         await pc.setLocalDescription(answer)
+        stage("local_description_set")
     except Exception as e:
-        logger.error(f"setLocalDescription error: {e}")
+        stage(f"setLocalDescription_failed: {e}", level="error")
         raise HTTPException(status_code=500, detail=f"setLocalDescription: {e}")
 
     _peer_state = PeerState(pc=pc, created=time.time(), outbound_video=outbound_video)
@@ -1113,8 +1210,11 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     _peer_state.ice_sampler_task = asyncio.create_task(_sample_ice_loop(_peer_state))
     _peer_state.ice_watchdog_task = asyncio.create_task(_ice_watchdog(_peer_state))
 
-    logger.info("WebRTC answer created")
-    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+    stage("answer_ready_returning")
+    payload = {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+    if DEBUG_NEG:
+        payload["negotiation_id"] = negotiation_id
+    return payload
 
 
 @router.get("/token")
