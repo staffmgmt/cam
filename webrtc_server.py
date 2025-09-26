@@ -368,7 +368,20 @@ def _ice_configuration() -> RTCConfiguration:
                 servers.extend([RTCIceServer(**s) for s in response.json()])
                 logger.info(f"Successfully fetched {len(servers)} metered ICE servers.")
         except Exception as e:
-            logger.warning(f"Metered ICE fetch failed: {e} - This may cause connection failures in restricted networks")
+            warn_msg = f"Metered ICE fetch failed: {e}"
+            logger.warning(warn_msg)
+            # Surface additional context if the host cannot be resolved (common on HF Spaces without outbound DNS)
+            try:
+                import socket
+                import urllib.parse
+                parsed = urllib.parse.urlparse("https://api.metered.ca")
+                host = parsed.hostname
+                if host:
+                    socket.gethostbyname(host)
+            except socket.gaierror as dns_err:
+                logger.warning(f"Metered ICE DNS lookup failed: {dns_err}. Verify outbound DNS/HTTPS access from the container or disable MIRAGE_METERED_API_KEY.")
+            except Exception:
+                pass
 
     # 2. Fallback to static TURN if metered fetch failed or wasn't configured
     if not any('turn:' in s.urls for s in servers) and TURN_URL and TURN_USER and TURN_PASS:
