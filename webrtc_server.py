@@ -461,6 +461,9 @@ class PeerState:
     last_ice_state: Optional[str] = None
     cleanup_task: Optional[asyncio.Task] = None
     outbound_video: Optional['OutboundVideoTrack'] = None
+    ice_samples: list[dict[str, Any]] = None  # rolling ICE stats snapshots
+    ice_sampler_task: Optional[asyncio.Task] = None
+    ice_watchdog_task: Optional[asyncio.Task] = None
 
 
 # In-memory single peer (extend to dict for multi-user)
@@ -1116,6 +1119,75 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
     _peer_state = PeerState(pc=pc, created=time.time(), outbound_video=outbound_video)
 
+    # Initialize ice_samples list
+    _peer_state.ice_samples = []
+
+    async def _sample_ice_loop(state_ref: PeerState):  # pragma: no cover diagnostic
+        try:
+            while True:
+                await asyncio.sleep(3)
+                pc_local = state_ref.pc
+                if pc_local.connectionState in ("closed", "failed"):
+                    break
+                try:
+                    stats = await pc_local.getStats()
+                    summary = {
+                        'ts': time.time(),
+                        'connectionState': pc_local.connectionState,
+                        'iceState': pc_local.iceConnectionState,
+                        'pairs': 0,
+                        'succeeded_pairs': 0,
+                        'nominated_pairs': 0,
+                        'local_candidates': 0,
+                        'remote_candidates': 0,
+                    }
+                    for sid, rep in stats.items():
+                        tp = getattr(rep, 'type', None)
+                        if tp == 'candidate-pair':
+                            summary['pairs'] += 1
+                            st = getattr(rep, 'state', None)
+                            if st == 'succeeded':
+                                summary['succeeded_pairs'] += 1
+                            if getattr(rep, 'nominated', False):
+                                summary['nominated_pairs'] += 1
+                        elif tp == 'local-candidate':
+                            summary['local_candidates'] += 1
+                        elif tp == 'remote-candidate':
+                            summary['remote_candidates'] += 1
+                    samples = state_ref.ice_samples
+                    if samples is not None:
+                        samples.append(summary)
+                        # Keep last 20 samples
+                        if len(samples) > 20:
+                            samples.pop(0)
+                except Exception as e:
+                    logger.debug(f"ICE sample failed: {e}")
+                # Stop sampling if connected (we keep last snapshots)
+                if pc_local.connectionState == 'connected':
+                    break
+        except Exception:
+            pass
+
+    async def _ice_watchdog(state_ref: PeerState):  # pragma: no cover diagnostic
+        try:
+            # Wait 18s; if still 'checking' without any succeeded pair, close to force client retry logic
+            await asyncio.sleep(18)
+            pc_local = state_ref.pc
+            if pc_local.iceConnectionState == 'checking' and pc_local.connectionState == 'connecting':
+                # Inspect latest sample to confirm lack of progress
+                last = state_ref.ice_samples[-1] if state_ref.ice_samples else {}
+                if last.get('succeeded_pairs', 0) == 0:
+                    logger.warning('ICE watchdog: still checking after 18s with 0 succeeded pairs - closing PC to unblock client')
+                    try:
+                        await pc_local.close()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    _peer_state.ice_sampler_task = asyncio.create_task(_sample_ice_loop(_peer_state))
+    _peer_state.ice_watchdog_task = asyncio.create_task(_ice_watchdog(_peer_state))
+
     logger.info("WebRTC answer created")
     return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
@@ -1210,6 +1282,24 @@ async def pipeline_stats():
         return {"pipeline": base_stats, "video_track": track_stats}
     except Exception as e:
         return {"error": str(e)}
+
+@router.get("/ice_stats")
+async def ice_stats():  # pragma: no cover diagnostic endpoint
+    try:
+        st = _peer_state
+        if st is None:
+            return {"active": False}
+        samples = st.ice_samples or []
+        latest = samples[-1] if samples else None
+        return {
+            'active': True,
+            'connectionState': getattr(st.pc, 'connectionState', None),
+            'iceState': getattr(st.pc, 'iceConnectionState', None),
+            'samples': samples,
+            'latest': latest,
+        }
+    except Exception as e:
+        return {'active': False, 'error': str(e)}
 
 # Optional: connection monitoring endpoint for diagnostics
 if add_connection_monitoring is not None:
