@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass
 import hashlib
 import hmac
+import inspect
 import secrets as pysecrets
 import base64 as pybase64
 import random
@@ -1153,7 +1154,20 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
             async def _bind_outbound_sender():
                 bound_method = None
+                sender_mid = None
                 try:
+                    # If the outbound track is already bound, record and exit
+                    existing_sender = None
+                    for s in pc.getSenders():
+                        if getattr(s, "track", None) is outbound_video:
+                            existing_sender = s
+                            break
+                    if existing_sender:
+                        bound_method = "existing_sender"
+                        sender_mid = getattr(existing_sender, "mid", None)
+                        stage("outbound_video_sender_already_bound")
+                        return
+
                     transceiver = None
                     for trans in pc.getTransceivers():
                         try:
@@ -1164,14 +1178,17 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                         except Exception:
                             continue
                     if transceiver and getattr(transceiver, "sender", None):
-                        await transceiver.sender.replaceTrack(outbound_video)
+                        sender = transceiver.sender
+                        result = sender.replaceTrack(outbound_video)
+                        if inspect.isawaitable(result):
+                            await result
                         bound_method = "transceiver.replaceTrack"
+                        sender_mid = getattr(sender, "mid", None)
                         stage("outbound_video_sender_bound_existing")
-                        if state_ref is not None:
-                            state_ref.outbound_sender_mid = getattr(transceiver.sender, "mid", None)
                     else:
-                        pc.addTrack(outbound_video)
+                        sender = pc.addTrack(outbound_video)
                         bound_method = "pc.addTrack"
+                        sender_mid = getattr(sender, "mid", None)
                         stage("outbound_video_sender_added_fallback")
                 except Exception as bind_exc:
                     stage(f"outbound_video_sender_bind_failed: {bind_exc}", level="error")
@@ -1184,6 +1201,8 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                         try:
                             state_ref.outbound_bind_method = bound_method
                             state_ref.outbound_sender_bind_ts = time.time()
+                            if sender_mid is not None:
+                                state_ref.outbound_sender_mid = sender_mid
                         except Exception:
                             pass
 
@@ -1226,19 +1245,30 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         if existing_sender:
             # Replace existing track only if different
             if existing_sender.track != outbound_video:
-                await existing_sender.replaceTrack(outbound_video)
+                result = existing_sender.replaceTrack(outbound_video)
+                if inspect.isawaitable(result):
+                    await result
                 stage("outbound_video_sender_replaced_existing")
             else:
                 stage("outbound_video_sender_prebound")
+            if _peer_state is not None:
+                _peer_state.outbound_bind_method = "existing_sender"
+                _peer_state.outbound_sender_mid = getattr(existing_sender, 'mid', None)
+                _peer_state.outbound_sender_bind_ts = time.time()
         else:
             # No existing video sender; try transceiver path first
             try:
                 video_trans = pc.addTransceiver('video', direction='sendrecv')
                 stage("outbound_video_transceiver_created")
-                await video_trans.sender.replaceTrack(outbound_video)
+                sender = getattr(video_trans, 'sender', None)
+                if sender is None:
+                    raise RuntimeError('transceiver.sender missing')
+                result = sender.replaceTrack(outbound_video)
+                if inspect.isawaitable(result):
+                    await result
                 stage("outbound_video_sender_bound")
                 try:
-                    params = video_trans.sender.getParameters()
+                    params = sender.getParameters()
                     if params and hasattr(params, 'encodings'):
                         if not params.encodings:
                             params.encodings = [{}]
@@ -1246,15 +1276,23 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                             enc['maxBitrate'] = min(enc.get('maxBitrate', 300_000), 300_000)
                             enc.setdefault('scaleResolutionDownBy', 2.0)
                             enc.setdefault('degradationPreference', 'maintain-resolution')
-                    video_trans.sender.setParameters(params)
+                    sender.setParameters(params)
                 except Exception:
                     pass
+                if _peer_state is not None:
+                    _peer_state.outbound_bind_method = "transceiver.replaceTrack"
+                    _peer_state.outbound_sender_mid = getattr(sender, 'mid', None)
+                    _peer_state.outbound_sender_bind_ts = time.time()
             except Exception as te:
                 stage(f"transceiver_path_failed: {te}", level='warning')
                 # Fallback to addTrack
                 try:
                     sender = pc.addTrack(outbound_video)
                     stage("outbound_video_added_fallback")
+                    if _peer_state is not None:
+                        _peer_state.outbound_bind_method = "pc.addTrack"
+                        _peer_state.outbound_sender_mid = getattr(sender, 'mid', None)
+                        _peer_state.outbound_sender_bind_ts = time.time()
                 except Exception as e2:
                     if 'Track already has a sender' in str(e2):
                         # Benign: treat as success (track was already bound earlier in this negotiation)
