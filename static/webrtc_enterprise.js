@@ -152,7 +152,7 @@
   }
 
   /* ---------------- Stage / Timeline Management ---------------- */
-  const stageOrder = ['init','local-media','offer-sent','ice-gathering','answer-received','remote-media','connected'];
+  const stageOrder = ['init','local-media','offer-sent','ice-gathering','answer-received','finalizing','remote-media','connected'];
   function setStage(newStage){
     if(!els.stageTimeline) return;
     if(!stageOrder.includes(newStage)) return;
@@ -168,6 +168,36 @@
     if (lr) lr.textContent = 'Stage: ' + newStage;
   }
   setStage('init');
+
+  const overlayState = { visible: true, message: 'Avatar feed will appear here', mode: 'idle' };
+  function setAvatarOverlay(visible, message, mode){
+    const overlay = els.avatarOverlay;
+    if(!overlay) return;
+    const nextMessage = (message !== undefined && message !== null) ? message : overlayState.message;
+    const nextMode = mode || overlayState.mode;
+    if(nextMessage !== overlayState.message){
+      overlay.innerHTML = `<span>${nextMessage}</span>`;
+      overlayState.message = nextMessage;
+    }
+    if(nextMode !== overlayState.mode){
+      overlay.dataset.state = nextMode;
+      overlayState.mode = nextMode;
+    }
+    if(overlayState.visible !== visible){
+      overlay.style.opacity = visible ? 1 : 0;
+      overlayState.visible = visible;
+    }
+  }
+  function showAvatarOverlay(message, mode){
+    setAvatarOverlay(true, message, mode);
+  }
+  function hideAvatarOverlay(force=false){
+    if(!force && !['waiting','warming','black','info'].includes(overlayState.mode)){
+      return;
+    }
+    setAvatarOverlay(false, null, 'active');
+  }
+  setAvatarOverlay(true, overlayState.message, overlayState.mode);
 
   /* --------------- Frame Counter & Black Frame Detection --------------- */
   let framePollTimer = null;
@@ -185,12 +215,31 @@
         if (j && j.frames_emitted != null && els.frameCounterDisplay) {
           els.frameCounterDisplay.textContent = 'Frames:' + j.frames_emitted;
         }
+        if(!j || j.active === false){
+          setAvatarOverlay(true, 'Avatar feed will appear here', 'idle');
+          return;
+        }
+        if(overlayState.mode === 'error'){
+          return;
+        }
+        if(j.source_bound === false){
+          showAvatarOverlay('Awaiting camera stream…', 'waiting');
+        } else if(j.placeholder_active){
+          showAvatarOverlay('Avatar pipeline warming up…', 'warming');
+        } else if((j.real_frames || 0) > 0 && overlayState.mode !== 'black'){
+          hideAvatarOverlay();
+        }
+        if(typeof j.luma_last === 'number' && j.luma_last <= 5 && (j.real_frames || 0) > 0){
+          showAvatarOverlay('Frames detected but extremely dark', 'info');
+        } else if (overlayState.mode === 'info' && (j.real_frames || 0) > 0) {
+          hideAvatarOverlay(true);
+        }
       } catch(_){ }
     }, 2000);
   }
   function startBlackDetection(){
     if(blackDetectTimer) clearInterval(blackDetectTimer);
-    const vid = els.remoteVideo; const overlay = els.avatarOverlay;
+  const vid = els.remoteVideo;
     if(!vid) return;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
@@ -204,13 +253,10 @@
         for (let i=0;i<data.length;i+=4){ sum += (data[i]*0.2126 + data[i+1]*0.7152 + data[i+2]*0.0722); count++; }
         const avg = sum / count;
         if (avg < BLACK_THRESHOLD) blackSampleConsecutive++; else blackSampleConsecutive = 0;
-        if (overlay){
-          if (blackSampleConsecutive >= BLACK_CONSECUTIVE_LIMIT){
-            overlay.style.opacity = 1;
-            overlay.innerHTML = '<span>Receiving black/placeholder frames... (pipeline warming or no source)</span>';
-          } else if (blackSampleConsecutive === 0 && overlay.innerText.includes('black/placeholder')) {
-            overlay.style.opacity = 0;
-          }
+        if (blackSampleConsecutive >= BLACK_CONSECUTIVE_LIMIT){
+          showAvatarOverlay('Receiving black frames… (pipeline warming or no source)', 'black');
+        } else if (blackSampleConsecutive === 0 && overlayState.mode === 'black') {
+          hideAvatarOverlay();
         }
       } catch(_){ }
     }, 1000);
@@ -488,6 +534,7 @@
             setSystemStatus('connected', 'Avatar stream received');
             setAvatarStatus('connected', 'Active');
             setStage('remote-media');
+            showAvatarOverlay('Waiting for avatar frames…', 'waiting');
             
             let stream;
             if (ev.streams && ev.streams[0]) {
@@ -534,11 +581,13 @@
               setAvatarStatus('idle', 'Disconnected');
               if (els.avatarWrapper) els.avatarWrapper.classList.remove('active');
             };
+                  hideAvatarOverlay();
             
             tr.onmute = () => {
               log('video track muted');
               setAvatarStatus('warning', 'Muted');
             };
+                  showAvatarOverlay('Avatar stream error', 'error');
             
             tr.onunmute = () => {
               log('video track unmuted');
@@ -546,16 +595,19 @@
             };
             
           } else if (tr && tr.kind === 'audio') {
+                  setAvatarOverlay(true, 'Avatar feed will appear here', 'idle');
             setSystemStatus('connected', 'Audio stream received');
           }
         } catch(e) { 
           log('ontrack error', e);
           setAvatarStatus('error', 'Connection Error');
+                  showAvatarOverlay('Avatar stream muted', 'info');
         }
       };
 
       // Data channel setup
       state.control = state.pc.createDataChannel('control');
+                  hideAvatarOverlay();
       
       state.control.onopen = () => {
         setSystemStatus('connected', 'WebRTC connection established');
@@ -649,6 +701,9 @@
   const answer = await r.json();
   await state.pc.setRemoteDescription(new RTCSessionDescription(answer));
   setStage('answer-received');
+  setStage('finalizing');
+  setSystemStatus('connecting', 'Finalizing connection...');
+  showAvatarOverlay('Preparing avatar stream…', 'waiting');
       log('WebRTC negotiation complete');
 
     } catch(e) {
@@ -657,6 +712,7 @@
       showToast('Failed to establish connection', 'error');
       state.connecting = false;
       setButtonLoading(els.connect, false);
+      setAvatarOverlay(true, 'Avatar feed will appear here', 'idle');
       throw e;
     }
   }
@@ -676,6 +732,16 @@
       clearInterval(state.metricsTimer); 
       state.metricsTimer = null; 
     }
+    if (framePollTimer) {
+      clearInterval(framePollTimer);
+      framePollTimer = null;
+    }
+    if (blackDetectTimer) {
+      clearInterval(blackDetectTimer);
+      blackDetectTimer = null;
+    }
+    blackSampleConsecutive = 0;
+    setAvatarOverlay(true, 'Avatar feed will appear here', 'idle');
 
     // Close connections
     if (state.control) { 
@@ -738,6 +804,7 @@
     els.connect.disabled = false; 
     els.disconnect.disabled = true; 
     setSystemStatus('idle', 'Disconnected');
+    setStage('init');
     showToast('Connection terminated', 'warning');
   }
 
