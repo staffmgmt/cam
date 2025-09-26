@@ -1674,3 +1674,145 @@ if add_connection_monitoring is not None:
     except Exception:
         pass
 # Force rebuild Thu Sep 25 13:03:20 EDT 2025
+
+# ---------------- TURN Diagnostic Endpoints -----------------
+# Narrowly scoped endpoints to inspect and probe TURN connectivity without
+# exposing arbitrary command execution. These are safe to leave enabled in
+# production; they redact credentials and impose short timeouts.
+
+@router.get("/turn_config")
+async def turn_config():
+    """Return current TURN/STUN configuration summary (no network tests)."""
+    try:
+        cfg = _ice_configuration()
+        turn_urls = []
+        stun_urls = []
+        for s in cfg.iceServers:
+            urls = s.urls if isinstance(s.urls, list) else [s.urls]
+            for u in urls:
+                if isinstance(u, str):
+                    if u.startswith('turn'):
+                        turn_urls.append(u)
+                    elif u.startswith('stun'):
+                        stun_urls.append(u)
+        return {
+            "turn_urls": turn_urls,
+            "stun_urls": stun_urls,
+            "static_turn_configured": bool(TURN_URL and TURN_USER and TURN_PASS),
+            "metered_api_key_present": bool(METERED_API_KEY),
+            "metered_disabled": DISABLE_METERED,
+            "force_relay": FORCE_RELAY,
+            "prefer_h264": PREFER_H264,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.get("/turn_probe")
+async def turn_probe():
+    """Actively probe TURN endpoints for DNS, TCP (and TLS for turns) reachability.
+
+    Returns per-URL diagnostics. Each probe uses short (<=3s) timeouts so the
+    entire call returns quickly even if endpoints are unreachable.
+    """
+    import socket, ssl, urllib.parse
+    cfg = _ice_configuration()
+    # Collect unique TURN URLs (avoid duplicate probing)
+    urls: list[str] = []
+    for s in cfg.iceServers:
+        _urls = s.urls if isinstance(s.urls, list) else [s.urls]
+        for u in _urls:
+            if isinstance(u, str) and u.startswith('turn') and u not in urls:
+                urls.append(u)
+
+    async def _probe(url: str):
+        result: dict[str, object] = {"url": url}
+        try:
+            # Normalize to parse (replace turn(s): with scheme placeholder acceptable to urlparse)
+            # We retain original scheme to decide TLS.
+            scheme = 'turns' if url.startswith('turns:') else 'turn'
+            # Convert to http/https just for parsing host/port path cleanly
+            fake = url.replace('turn:', 'http://').replace('turns:', 'https://')
+            parsed = urllib.parse.urlparse(fake)
+            host = parsed.hostname
+            port = parsed.port or (443 if scheme == 'turns' else 3478)
+            result['host'] = host
+            result['port'] = port
+            dns_info: dict[str, object] = {}
+            tcp_info: dict[str, object] = {}
+            tls_info: dict[str, object] = {}
+            if not host:
+                result['error'] = 'parse_failed'
+                return result
+            loop = asyncio.get_running_loop()
+            # DNS resolve
+            try:
+                t0 = time.perf_counter()
+                addrs = await asyncio.wait_for(loop.getaddrinfo(host, port, type=socket.SOCK_STREAM), timeout=2.5)
+                dns_info['latency_ms'] = (time.perf_counter() - t0) * 1000.0
+                dns_info['resolved'] = True
+                # Extract unique IPs
+                ips = []
+                for fam, socktype, proto, canon, sockaddr in addrs:
+                    ip = sockaddr[0]
+                    if ip not in ips:
+                        ips.append(ip)
+                dns_info['addresses'] = ips[:5]
+            except Exception as e:
+                dns_info['resolved'] = False
+                dns_info['error'] = str(e)
+            result['dns'] = dns_info
+            # Skip further probes if DNS failed
+            if not dns_info.get('resolved'):
+                return result
+            # TCP connect (first resolved address)
+            try:
+                target_ip = dns_info['addresses'][0] if dns_info.get('addresses') else host
+                t1 = time.perf_counter()
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3.0)
+                err = sock.connect_ex((target_ip, port))
+                if err == 0:
+                    tcp_info['ok'] = True
+                else:
+                    tcp_info['ok'] = False
+                    tcp_info['error_code'] = err
+                tcp_info['latency_ms'] = (time.perf_counter() - t1) * 1000.0
+                sock_ok = (err == 0)
+                # TLS handshake if scheme turns and TCP succeeded
+                if sock_ok and scheme == 'turns':
+                    try:
+                        ctx = ssl.create_default_context()
+                        # TURN servers sometimes use certificates not matching host; allow override if needed
+                        if os.getenv('MIRAGE_TURN_TLS_NO_VERIFY','0').lower() in ('1','true','yes','on'):
+                            ctx.check_hostname = False
+                            ctx.verify_mode = ssl.CERT_NONE
+                        t2 = time.perf_counter()
+                        tls_sock = ctx.wrap_socket(sock, server_hostname=host)
+                        # perform handshake implicitly by wrap
+                        tls_info['ok'] = True
+                        tls_info['latency_ms'] = (time.perf_counter() - t2) * 1000.0
+                        tls_sock.close()
+                    except Exception as e:
+                        tls_info['ok'] = False
+                        tls_info['error'] = str(e)
+                sock.close()
+            except Exception as e:
+                tcp_info['ok'] = False
+                tcp_info['error'] = str(e)
+            result['tcp_connect'] = tcp_info
+            if tls_info:
+                result['tls_handshake'] = tls_info
+        except Exception as e:  # pragma: no cover - defensive
+            result['error'] = str(e)
+        return result
+
+    probes = await asyncio.gather(*[_probe(u) for u in urls]) if urls else []
+    return {
+        "static_turn_configured": bool(TURN_URL and TURN_USER and TURN_PASS),
+        "metered_api_key_present": bool(METERED_API_KEY),
+        "metered_disabled": DISABLE_METERED,
+        "force_relay": FORCE_RELAY,
+        "turn_urls": urls,
+        "probes": probes,
+    }
+
