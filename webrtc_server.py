@@ -642,9 +642,23 @@ class OutboundVideoTrack(VideoStreamTrack):
         self._first_relay_ts: Optional[float] = None
         self._placeholder_deactivated_ts: Optional[float] = None
         self._placeholder_initial_ts: float = time.time()
+        # Extended diagnostics
+        self._luma_last: Optional[float] = None
+        self._luma_samples: list[float] = []
+        self._real_frames: int = 0
+        self._placeholder_frames: int = 0
+        self._bind_attempts: int = 0
+        self._bound_at: Optional[float] = None
 
     def set_source(self, track: MediaStreamTrack):
-        self._source = track
+        self._bind_attempts += 1
+        # Guard: ignore if already bound and active to avoid accidental overwrite
+        if self._source is None:
+            self._source = track
+            self._bound_at = time.time()
+            logger.info("OutboundVideoTrack source bound (attempt=%d)" % self._bind_attempts)
+        else:
+            logger.warning("OutboundVideoTrack set_source called but source already set (attempt=%d)" % self._bind_attempts)
         
     def clear_source(self):
         """Clear the source to prevent hanging on failed connections"""
@@ -663,6 +677,20 @@ class OutboundVideoTrack(VideoStreamTrack):
                 if self._placeholder_active:
                     self._placeholder_active = False
                     self._placeholder_deactivated_ts = time.time()
+                # Luminance sample every 15 frames
+                if (self._frame_count % 15) == 0:
+                    try:
+                        arr = f.to_ndarray(format="bgr24")
+                        # convert to gray cheaply
+                        luma = float(np.mean(arr))
+                        self._luma_last = luma
+                        self._luma_samples.append(luma)
+                        if len(self._luma_samples) > 200:
+                            self._luma_samples.pop(0)
+                    except Exception as _ex:
+                        if (self._frame_count % 150) == 0:
+                            logger.debug(f"luma sample failed: {_ex}")
+                self._real_frames += 1
                 if (self._frame_count % 30) == 0:
                     try:
                         logger.info(f"OutboundVideoTrack relayed frame {self._frame_count} size={getattr(f, 'width', '?')}x{getattr(f, 'height', '?')}")
@@ -732,6 +760,7 @@ class OutboundVideoTrack(VideoStreamTrack):
         vframe.time_base = time_base
         self._frame_count += 1
         self._debug_emitted += 1
+        self._placeholder_frames += 1
         if placeholder_active:
             self._placeholder_sent += 1
             if self._placeholder_sent in (1, 10):
@@ -1250,21 +1279,63 @@ async def cleanup_peer(x_api_key: Optional[str] = Header(default=None), x_auth_t
 
 @router.get("/frame_counter")
 async def frame_counter():
+    """Expose outbound video diagnostics to aid in debugging blank/black feed issues.
+
+    Returns
+    -------
+    active: bool - whether a peer exists
+    frames_emitted: int | None - total frames sent out the outbound track
+    placeholder_active: bool | None - whether placeholder pattern mode is still active
+    placeholder_sent: int | None - number of placeholder frames emitted
+    real_frames: int | None - relayed (non-placeholder) frames from source
+    placeholder_frames: int | None - internally generated placeholder frames
+    luma_last / luma_avg: float | None - last / rolling average luminance (0-255 BGR mean heuristic)
+    relay_failures / relay_last_error - relay attempt error counts/last error
+    source_bound: bool - whether outbound track has a source bound
+    first_relay_ts: float | None - timestamp of first successful source frame relay
+    bound_at: float | None - when set_source first succeeded
+    """
     try:
         st = _peer_state
         if st is None:
             return {"active": False}
         pc = st.pc
-        count = None
+        # Find outbound track
+        ov = None
         try:
             for s in pc.getSenders():
                 tr = getattr(s, 'track', None)
-                if tr and getattr(tr, 'kind', None) == 'video' and hasattr(tr, '_debug_emitted'):
-                    count = getattr(tr, '_debug_emitted')
+                if tr and getattr(tr, 'kind', None) == 'video' and hasattr(tr, '_placeholder_active') and hasattr(tr, '_real_frames'):
+                    ov = tr
                     break
         except Exception:
             pass
-        return {"active": True, "frames_emitted": count}
+        if ov is None:
+            return {"active": True, "frames_emitted": None, "note": "outbound track not found"}
+        # Compute rolling luma average
+        luma_avg = None
+        try:
+            samples = getattr(ov, '_luma_samples', None)
+            if samples:
+                import numpy as _np
+                luma_avg = float(_np.mean(samples))
+        except Exception:
+            luma_avg = None
+        return {
+            "active": True,
+            "frames_emitted": getattr(ov, '_frame_count', None),
+            "placeholder_active": getattr(ov, '_placeholder_active', None),
+            "placeholder_sent": getattr(ov, '_placeholder_sent', None),
+            "real_frames": getattr(ov, '_real_frames', None),
+            "placeholder_frames": getattr(ov, '_placeholder_frames', None),
+            "luma_last": getattr(ov, '_luma_last', None),
+            "luma_avg": luma_avg,
+            "relay_failures": getattr(ov, '_relay_failures', None),
+            "relay_last_error": getattr(ov, '_relay_last_error', None),
+            "source_bound": getattr(ov, '_source', None) is not None,
+            "bound_at": getattr(ov, '_bound_at', None),
+            "first_relay_ts": getattr(ov, '_first_relay_ts', None),
+        }
     except Exception as e:
         return {"active": False, "error": str(e)}
 
