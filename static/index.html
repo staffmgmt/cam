@@ -1,72 +1,625 @@
-<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-  <meta http-equiv="Content-Style-Type" content="text/css">
-  <title></title>
-  <meta name="Generator" content="Cocoa HTML Writer">
-  <meta name="CocoaVersion" content="2299.77">
-  <style type="text/css">
-    body {background-color: #0a0a0b}
-    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; text-align: center; font: 13.5px 'Helvetica Neue'; color: #908f9a; -webkit-text-stroke: #908f9a; min-height: 16.0px}
-    p.p3 {margin: 0.0px 0.0px 0.0px 0.0px; font: 13.5px 'Helvetica Neue'; color: #ffffff; -webkit-text-stroke: #ffffff; background-color: #101012}
-    p.p4 {margin: 0.0px 0.0px 0.0px 0.0px; font: 10.5px 'Helvetica Neue'; color: #ffffff; -webkit-text-stroke: #ffffff; background-color: #585e6d; min-height: 12.0px}
-    p.p5 {margin: 0.0px 0.0px 0.0px 0.0px; font: 10.5px 'Helvetica Neue'; color: #ffffff; -webkit-text-stroke: #ffffff}
-    p.p6 {margin: 0.0px 0.0px 0.0px 0.0px; font: 10.5px 'Helvetica Neue'; color: #908f9a; -webkit-text-stroke: #908f9a}
-    p.p8 {margin: 0.0px 0.0px 0.0px 0.0px; text-align: center; font: 18.0px 'Helvetica Neue'; color: #504aed; -webkit-text-stroke: #504aed}
-    p.p9 {margin: 0.0px 0.0px 0.0px 0.0px; text-align: center; font: 9.0px 'Helvetica Neue'; color: #5e5d67; -webkit-text-stroke: #5e5d67; background-color: #151518}
-    p.p10 {margin: 0.0px 0.0px 0.0px 0.0px; font: 13.5px 'Helvetica Neue'; color: #ffffff; -webkit-text-stroke: #ffffff}
-    p.p11 {margin: 0.0px 0.0px 0.0px 0.0px; font: 11.0px 'Helvetica Neue'; color: #ffffff; -webkit-text-stroke: #ffffff; min-height: 13.0px}
-    p.p12 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px 'Helvetica Neue'; color: #908f9a; -webkit-text-stroke: #908f9a; min-height: 15.0px}
-    p.p13 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px 'Helvetica Neue'; color: #908f9a; -webkit-text-stroke: #908f9a}
-    p.p14 {margin: 0.0px 0.0px 0.0px 0.0px; text-align: center; font: 10.5px '.SF NS'; color: #ffffff; -webkit-text-stroke: #ffffff; min-height: 12.0px}
-    p.p15 {margin: 0.0px 0.0px 0.0px 0.0px; font: 10.5px '.SF NS'; color: #ffffff; -webkit-text-stroke: #ffffff}
-    p.p16 {margin: 0.0px 0.0px 0.0px 0.0px; font: 10.5px '.SF NS'; color: #ffffff; -webkit-text-stroke: #ffffff; background-color: #151518}
-    p.p17 {margin: 0.0px 0.0px 0.0px 0.0px; font: 10.5px 'Helvetica Neue'; color: #ffffff; -webkit-text-stroke: #ffffff; min-height: 12.0px}
-    p.p18 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px 'Helvetica Neue'; color: #ffffff; -webkit-text-stroke: #ffffff; min-height: 15.0px}
-    span.s1 {font-kerning: none}
-    span.s2 {font-kerning: none; background-color: #151518}
-    span.s3 {font-kerning: none; background-color: rgba(0, 0, 0, 0.7)}
-    span.s4 {font-kerning: none; background-color: #101012}
-    span.s5 {font-kerning: none; background-color: #e82c35}
+  <meta charset="UTF-8" />
+  <title>Mirage AI Avatar Studio</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #6366f1;
+      --primary-dark: #4f46e5;
+      --primary-light: #818cf8;
+      --secondary: #06b6d4;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-300: #d1d5db;
+      --gray-400: #9ca3af;
+      --gray-500: #6b7280;
+      --gray-600: #4b5563;
+      --gray-700: #374151;
+      --gray-800: #1f2937;
+      --gray-900: #111827;
+      --bg-primary: #0a0a0b;
+      --bg-secondary: #141417;
+      --bg-tertiary: #1c1c20;
+      --text-primary: #ffffff;
+      --text-secondary: #a1a1aa;
+      --text-tertiary: #71717a;
+      --border: #27272a;
+      --border-light: #3f3f46;
+      --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+      --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+      --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+      --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+      --gradient-primary: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+      --gradient-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+
+    * { box-sizing: border-box; }
+    
+    body { 
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+      margin: 0;
+      padding: 0;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+    
+    .app-container {
+      min-height: 100vh;
+      background: radial-gradient(ellipse at top, rgba(99, 102, 241, 0.1) 0%, transparent 70%);
+    }
+    
+    .header {
+      padding: 2rem 0;
+      text-align: center;
+      position: relative;
+      z-index: 10;
+    }
+    
+    .header::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100px;
+      height: 4px;
+      background: var(--gradient-primary);
+      border-radius: 2px;
+    }
+    
+    .header h1 {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-weight: 700;
+      margin: 1rem 0 0.5rem;
+      background: var(--gradient-primary);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.02em;
+    }
+    
+    .header .subtitle {
+      font-size: 1.125rem;
+      color: var(--text-secondary);
+      margin: 0;
+      font-weight: 400;
+    }
+    
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
+    
+    .main-layout {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2rem;
+      margin-bottom: 3rem;
+    }
+    
+    @media (min-width: 1024px) {
+      .main-layout {
+        grid-template-columns: 1fr 320px;
+      }
+    }
+    
+    .content-area {
+      min-width: 0;
+    }
+    
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    
+    .control-panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      box-shadow: var(--shadow-lg);
+    }
+    
+    .control-panel h3 {
+      margin: 0 0 1rem;
+      font-size: 1.125rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    
+    .control-panel h3::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      background: var(--primary);
+      border-radius: 50%;
+    }
+    
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    
+    .file-upload {
+      position: relative;
+      display: block;
+    }
+    
+    .file-upload input[type="file"] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      border: 0;
+    }
+    
+    .file-upload-button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.75rem;
+      width: 100%;
+      padding: 1rem;
+      background: var(--bg-tertiary);
+      border: 2px dashed var(--border-light);
+      border-radius: 0.75rem;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-weight: 500;
+    }
+    
+    .file-upload-button:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+      background: rgba(99, 102, 241, 0.05);
+    }
+    
+    .file-upload-button.has-file {
+      border-color: var(--success);
+      color: var(--success);
+      background: rgba(16, 185, 129, 0.05);
+    }
+    
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: 0.75rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .btn::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+      transition: left 0.5s ease;
+    }
+    
+    .btn:hover::before {
+      left: 100%;
+    }
+    
+    .btn-primary {
+      background: var(--gradient-primary);
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-lg);
+    }
+    
+    .btn-secondary {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border-light);
+    }
+    
+    .btn-secondary:hover {
+      background: var(--bg-secondary);
+      border-color: var(--primary);
+    }
+    
+    .btn-success {
+      background: var(--success);
+      color: white;
+    }
+    
+    .btn-danger {
+      background: var(--error);
+      color: white;
+    }
+    
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+    
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 1rem;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    
+    .status-idle .status-dot { background: var(--gray-500); }
+    .status-connecting .status-dot { background: var(--warning); }
+    .status-connected .status-dot { background: var(--success); }
+    .status-error .status-dot { background: var(--error); }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .video-container {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    
+    @media (min-width: 768px) {
+      .video-container {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+    
+    .video-panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    .video-panel::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: var(--gradient-primary);
+    }
+    
+    .video-panel h3 {
+      margin: 0 0 1rem;
+      font-size: 1.125rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .video-wrapper {
+      position: relative;
+      border-radius: 0.75rem;
+      overflow: hidden;
+      background: #000;
+      aspect-ratio: 16/9;
+    }
+    
+    .video-wrapper video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: 0.75rem;
+    }
+    
+    .video-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+      opacity: 1;
+      transition: opacity 0.3s ease;
+    }
+    
+    .video-wrapper.active .video-overlay {
+      opacity: 0;
+      pointer-events: none;
+    }
+    
+    .metrics-panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      padding: 1.5rem;
+    }
+    
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 1rem;
+    }
+    
+    .metric-item {
+      text-align: center;
+      padding: 1rem;
+      background: var(--bg-tertiary);
+      border-radius: 0.5rem;
+      border: 1px solid var(--border);
+    }
+    
+    .metric-value {
+      display: block;
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 0.25rem;
+    }
+    
+    .metric-label {
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 500;
+    }
+    
+    .loading-spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid transparent;
+      border-top: 2px solid currentColor;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    .toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1rem 1.5rem;
+      box-shadow: var(--shadow-xl);
+      z-index: 1000;
+      transform: translateX(100%);
+      transition: transform 0.3s ease;
+      max-width: 400px;
+    }
+    
+    .toast.show {
+      transform: translateX(0);
+    }
+    
+    .toast-success {
+      border-left: 4px solid var(--success);
+    }
+    
+    .toast-error {
+      border-left: 4px solid var(--error);
+    }
+    
+    .toast-warning {
+      border-left: 4px solid var(--warning);
+    }
+    
+    @media (max-width: 768px) {
+      .container {
+        padding: 0 1rem;
+      }
+      
+      .header {
+        padding: 1.5rem 0;
+      }
+      
+      .main-layout {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+      }
+      
+      .sidebar {
+        order: -1;
+      }
+      
+      .toast {
+        bottom: 1rem;
+        right: 1rem;
+        left: 1rem;
+        max-width: none;
+      }
+    }
   </style>
 </head>
 <body>
-<h1 style="margin: 0.0px 0.0px 6.0px 0.0px; text-align: center; font: 40.0px 'Trebuchet MS'; color: #ffffff; -webkit-text-stroke: #ffffff"><span class="s1">Mirage</span></h1>
-<p class="p2"><span class="s1"></span><br></p>
-<p class="p3"><span class="s1">Local Camera</span></p>
-<p class="p4"><span class="s1"></span><br></p>
-<p class="p5"><span class="s2">Inactive</span></p>
-<p class="p6"><span class="s3">Click Connect to start camera</span></p>
-<p class="p3"><span class="s1">Avatar</span></p>
-<p class="p4"><span class="s1"></span><br></p>
-<p class="p5"><span class="s2">Inactive</span></p>
-<p class="p6"><span class="s3">Avatar feed will appear here</span></p>
-<h3 style="margin: 0.0px 0.0px 14.0px 0.0px; font: 14.0px 'Helvetica Neue'; color: #ffffff; -webkit-text-stroke: #ffffff"><span class="s4">Performance Metrics</span></h3>
-<p class="p8"><span class="s2">--</span></p>
-<p class="p9"><span class="s1">LATENCY (MS)</span></p>
-<p class="p8"><span class="s2">--</span></p>
-<p class="p9"><span class="s1">FPS</span></p>
-<p class="p8"><span class="s2">--</span></p>
-<p class="p9"><span class="s1">GPU USAGE</span></p>
-<p class="p8"><span class="s2">--</span></p>
-<p class="p9"><span class="s1">QUALITY</span></p>
-<p class="p10"><span class="s4">Reference Image</span></p>
-<p class="p11"><span class="s1"></span><br></p>
-<p class="p12"><span class="s1"></span><br></p>
-<p class="p13"><span class="s2">Choose Reference Image</span></p>
-<p class="p10"><span class="s4">Pipeline Control</span></p>
-<p class="p14"><span class="s1"><b></b></span><br></p>
-<p class="p15"><span class="s2"><b>Initialize Pipeline</b></span></p>
-<p class="p14"><span class="s1"><b></b></span><br></p>
-<p class="p15"><span class="s4"><b>Connect</b></span></p>
-<p class="p14"><span class="s1"><b></b></span><br></p>
-<p class="p15"><span class="s5"><b>Disconnect</b></span></p>
-<p class="p14"><span class="s1"><b></b></span><br></p>
-<p class="p16"><span class="s1"><b>Debug</b></span></p>
-<p class="p10"><span class="s4">System Status</span></p>
-<p class="p17"><span class="s1"></span><br></p>
-<p class="p5"><span class="s2">System Idle</span></p>
-<p class="p18"><span class="s1"></span><br></p>
+  <div class="app-container">
+    <div class="container">
+      <div class="header">
+        <h1>Mirage AI Avatar Studio</h1>
+        <p class="subtitle">Enterprise-Grade Real-Time Identity Transformation</p>
+      </div>
+
+      <div class="main-layout">
+        <div class="content-area">
+          <div class="video-container">
+            <div class="video-panel">
+              <h3>
+                Local Camera
+                <span class="status-indicator status-idle" id="localStatus">
+                  <span class="status-dot"></span>
+                  <span id="localStatusText">Inactive</span>
+                </span>
+              </h3>
+              <div class="video-wrapper" id="localWrapper">
+                <video id="localVideo" autoplay muted playsinline></video>
+                <div class="video-overlay" id="localOverlay">
+                  <span>Click Connect to start camera</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="video-panel">
+              <h3>
+                AI Avatar
+                <span class="status-indicator status-idle" id="avatarStatus">
+                  <span class="status-dot"></span>
+                  <span id="avatarStatusText">Inactive</span>
+                </span>
+              </h3>
+              <div class="video-wrapper" id="avatarWrapper">
+                <video id="remoteVideo" autoplay playsinline muted></video>
+                <div class="video-overlay" id="avatarOverlay">
+                  <span>Avatar feed will appear here</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="metrics-panel">
+            <h3>Performance Metrics</h3>
+            <div class="metrics-grid">
+              <div class="metric-item">
+                <span class="metric-value" id="latencyValue">--</span>
+                <span class="metric-label">Latency (ms)</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-value" id="fpsValue">--</span>
+                <span class="metric-label">FPS</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-value" id="gpuValue">--</span>
+                <span class="metric-label">GPU Usage</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-value" id="qualityValue">--</span>
+                <span class="metric-label">Quality</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar">
+          <div class="control-panel">
+            <h3>Reference Image</h3>
+            <label class="file-upload">
+              <input type="file" id="referenceInput" accept="image/*" />
+              <div class="file-upload-button" id="uploadButton">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17,8 12,3 7,8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <span id="uploadText">Choose Reference Image</span>
+              </div>
+            </label>
+          </div>
+
+          <div class="control-panel">
+            <h3>Pipeline Control</h3>
+            <div class="controls">
+              <button id="initBtn" class="btn btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1 1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                Initialize Pipeline
+              </button>
+              
+              <button id="connectBtn" class="btn btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                  <polyline points="22,4 12,14.01 9,11.01"/>
+                </svg>
+                Connect
+              </button>
+              
+              <button id="disconnectBtn" class="btn btn-danger" disabled>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 6 6 18"/>
+                  <path d="M6 6l12 12"/>
+                </svg>
+                Disconnect
+              </button>
+              
+              <button id="debugBtn" class="btn btn-secondary" title="Debug Models">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20 6 9 17l-5-5"/>
+                </svg>
+                Debug
+              </button>
+            </div>
+          </div>
+
+          <div class="control-panel">
+            <h3>System Status</h3>
+            <div class="status-indicator" id="systemStatus">
+              <span class="status-dot"></span>
+              <span id="statusText">System Idle</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">
+    <div id="toastContent"></div>
+  </div>
+
+  <script src="/static/webrtc_enterprise.js"></script>
 </body>
 </html>
