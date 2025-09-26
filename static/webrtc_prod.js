@@ -1,4 +1,4 @@
-/* Production-focused WebRTC client (replaces dev UI). */
+/* Enterprise-grade WebRTC client with premium UI integration */
 (function(){
   const state = {
     pc: null,
@@ -9,23 +9,130 @@
     connected: false,
     authToken: null,
     connecting: false,
-    cancelled: false
+    cancelled: false,
+    initialized: false
   };
+  
   const params = new URLSearchParams(location.search);
   const FORCE_RELAY_URL = params.get('relay') === '1';
+  
   const els = {
+    // File upload
     ref: document.getElementById('referenceInput'),
+    uploadButton: document.getElementById('uploadButton'),
+    uploadText: document.getElementById('u  // Auto-initialize on page load (idempotent)
+  (async ()=>{
+    try {
+      setSystemStatus('connecting', 'Auto-initializing pipeline...');
+      const r = await fetch('/initialize', {method:'POST'});
+      const j = await r.json().catch(()=>({}));
+      if (r.ok && j && (j.status==='success' || j.status==='already_initialized')){
+        state.initialized = true;
+        setSystemStatus('connected', j.message || 'System ready');
+        if (els.init) {
+          els.init.classList.remove('btn-secondary');
+          els.init.classList.add('btn-success');
+          els.init.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+              <polyline points="22,4 12,14.01 9,11.01"/>
+            </svg>
+            Pipeline Ready
+          `;
+        }
+      } else {
+        console.warn('auto-initialize response', r.status, j);
+        setSystemStatus('idle', 'Click Initialize to start');
+      }
+    } catch(e){
+      setSystemStatus('idle', 'Click Initialize to start');
+    }
+  })();    // Control buttons
     init: document.getElementById('initBtn'),
     debug: document.getElementById('debugBtn'),
     connect: document.getElementById('connectBtn'),
     disconnect: document.getElementById('disconnectBtn'),
+    
+    // Video elements
     localVideo: document.getElementById('localVideo'),
     remoteVideo: document.getElementById('remoteVideo'),
-    status: document.getElementById('statusText'),
-    perf: document.getElementById('perfBar')
+    localWrapper: document.getElementById('localWrapper'),
+    avatarWrapper: document.getElementById('avatarWrapper'),
+    localOverlay: document.getElementById('localOverlay'),
+    avatarOverlay: document.getElementById('avatarOverlay'),
+    
+    // Status indicators
+    systemStatus: document.getElementById('systemStatus'),
+    localStatus: document.getElementById('localStatus'),
+    avatarStatus: document.getElementById('avatarStatus'),
+    statusText: document.getElementById('statusText'),
+    localStatusText: document.getElementById('localStatusText'),
+    avatarStatusText: document.getElementById('avatarStatusText'),
+    
+    // Metrics
+    latencyValue: document.getElementById('latencyValue'),
+    fpsValue: document.getElementById('fpsValue'),
+    gpuValue: document.getElementById('gpuValue'),
+    qualityValue: document.getElementById('qualityValue'),
+    
+    // Toast
+    toast: document.getElementById('toast'),
+    toastContent: document.getElementById('toastContent')
   };
-  function setStatus(txt){ els.status.textContent = txt; }
-  function log(...a){ console.log('[PROD]', ...a); }
+
+  // UI Helper Functions
+  function setSystemStatus(status, text) {
+    els.systemStatus.className = `status-indicator status-${status}`;
+    els.statusText.textContent = text;
+  }
+
+  function setLocalStatus(status, text) {
+    els.localStatus.className = `status-indicator status-${status}`;
+    els.localStatusText.textContent = text;
+  }
+
+  function setAvatarStatus(status, text) {
+    els.avatarStatus.className = `status-indicator status-${status}`;
+    els.avatarStatusText.textContent = text;
+  }
+
+  function showToast(message, type = 'info') {
+    els.toastContent.textContent = message;
+    els.toast.className = `toast toast-${type} show`;
+    setTimeout(() => {
+      els.toast.classList.remove('show');
+    }, 4000);
+  }
+
+  function updateMetrics(latency, fps, gpu, quality = 'HD') {
+    els.latencyValue.textContent = latency || '--';
+    els.fpsValue.textContent = fps || '--';
+    els.gpuValue.textContent = gpu || '--';
+    els.qualityValue.textContent = quality || '--';
+  }
+
+  function setButtonLoading(button, loading = true) {
+    if (loading) {
+      button.disabled = true;
+      const originalText = button.innerHTML;
+      button.dataset.originalText = originalText;
+      button.innerHTML = '<span class="loading-spinner"></span> Processing...';
+    } else {
+      button.disabled = false;
+      if (button.dataset.originalText) {
+        button.innerHTML = button.dataset.originalText;
+        delete button.dataset.originalText;
+      }
+    }
+  }
+
+  function setStatus(txt) { 
+    setSystemStatus('idle', txt);
+  }
+  
+  function log(...a) { 
+    console.log('[MIRAGE]', ...a); 
+  }
   // Verbose toggle (can be overridden by backend-provided global or URL param ?wv=1)
   const VERBOSE = (window.MIRAGE_WEBRTC_VERBOSE === true) || (new URLSearchParams(location.search).get('wv')==='1');
   const STATS_INTERVAL_MS = (window.MIRAGE_WEBRTC_STATS_INTERVAL_MS) || 5000;
@@ -91,28 +198,43 @@
 
   async function handleReference(e){
     const file = e.target.files && e.target.files[0];
-    if(!file) return;
+    if(!file) {
+      els.uploadButton.classList.remove('has-file');
+      els.uploadText.textContent = 'Choose Reference Image';
+      return;
+    }
+    
+    // Update UI immediately
+    els.uploadButton.classList.add('has-file');
+    els.uploadText.textContent = `✓ ${file.name}`;
+    showToast(`Reference image selected: ${file.name}`, 'success');
+    
     // Cache base64 for datachannel use
     const buf = await file.arrayBuffer();
     const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
     state.referenceImage = b64;
+    
     // Also POST to HTTP endpoint so the pipeline has the reference even before WebRTC connects
     try {
-      setStatus('Uploading reference...');
+      setSystemStatus('connecting', 'Uploading reference image...');
       const fd = new FormData();
       fd.append('file', new Blob([buf], {type: file.type||'application/octet-stream'}), file.name||'reference');
       const resp = await fetch('/set_reference', {method:'POST', body: fd});
       const jr = await resp.json().catch(()=>({}));
       if (resp.ok && jr && (jr.status==='success' || jr.status==='ok')){
-        setStatus('Reference set');
+        setSystemStatus('connected', 'Reference image uploaded successfully');
+        showToast('Reference image set successfully', 'success');
       } else {
-        setStatus('Reference upload failed');
+        setSystemStatus('error', 'Reference upload failed');
+        showToast('Failed to upload reference image', 'error');
         console.warn('set_reference response', resp.status, jr);
       }
     } catch(err){
       console.warn('set_reference error', err);
-      setStatus('Reference upload error');
+      setSystemStatus('error', 'Reference upload error');
+      showToast('Error uploading reference image', 'error');
     }
+    
     // If already connected, also send via data channel for immediate in-session update
     try {
       if (state.connected && state.control && state.control.readyState === 'open') {
@@ -126,8 +248,9 @@
     if(state.connected) return;
     if(state.connecting) return;
     try {
-      setStatus('Requesting media');
-      els.connect.disabled = true;
+      setSystemStatus('connecting', 'Requesting camera access...');
+      setLocalStatus('connecting', 'Initializing');
+      setButtonLoading(els.connect, true);
       els.disconnect.disabled = false; // allow cancel during negotiation
       state.cancelled = false; state.connecting = true;
       // Quick ping to verify router is mounted
@@ -147,10 +270,12 @@
           console.warn('Token endpoint 404 - proceeding without token');
         }
       } catch(_){}
-  state.localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
-  els.localVideo.srcObject = state.localStream;
-  try { els.localVideo.play && els.localVideo.play(); } catch(_) {}
-      setStatus('Creating peer');
+      state.localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+      els.localVideo.srcObject = state.localStream;
+      els.localWrapper.classList.add('active');
+      setLocalStatus('connected', 'Camera Active');
+      try { els.localVideo.play && els.localVideo.play(); } catch(_) {}
+      setSystemStatus('connecting', 'Establishing connection...');
       let iceCfg = {iceServers:[{urls:['stun:stun.l.google.com:19302']}]};
       try {
         const ic = await fetch('/webrtc/ice_config');
@@ -206,8 +331,8 @@
           const tr = ev.track;
           log('ontrack', tr && tr.kind, tr && tr.readyState, ev.streams && ev.streams.length);
           if (tr && tr.kind === 'video') {
-            // Only handle video track for remote video element
-            setStatus('Video track received');
+            setSystemStatus('connected', 'Avatar stream received');
+            setAvatarStatus('connected', 'Active');
             let stream;
             if(ev.streams && ev.streams[0]){
               stream = ev.streams[0];
@@ -221,6 +346,7 @@
             log('Setting srcObject on video element, current value:', els.remoteVideo.srcObject);
             els.remoteVideo.srcObject = null;
             els.remoteVideo.srcObject = stream;
+            els.avatarWrapper.classList.add('active');
             log('srcObject set, waiting for loadeddata...');
             
             // Add more event listeners for debugging
@@ -237,27 +363,56 @@
                 }, 100);
               });
             };
-            els.remoteVideo.onplaying = () => log('video: playing');
-            els.remoteVideo.onerror = (e) => log('video error:', e);
+            els.remoteVideo.onplaying = () => {
+              log('video: playing');
+              showToast('Avatar stream connected successfully', 'success');
+            };
+            els.remoteVideo.onerror = (e) => {
+              log('video error:', e);
+              setAvatarStatus('error', 'Stream Error');
+            };
             els.remoteVideo.onstalled = () => log('video: stalled');
             
             // Monitor video track state changes
-            tr.onended = () => log('video track ended');
-            tr.onmute = () => log('video track muted');
-            tr.onunmute = () => log('video track unmuted');
+            tr.onended = () => {
+              log('video track ended');
+              setAvatarStatus('idle', 'Disconnected');
+              els.avatarWrapper.classList.remove('active');
+            };
+            tr.onmute = () => {
+              log('video track muted');
+              setAvatarStatus('warning', 'Muted');
+            };
+            tr.onunmute = () => {
+              log('video track unmuted');
+              setAvatarStatus('connected', 'Active');
+            };
             
           } else if (tr && tr.kind === 'audio') {
-            setStatus('Audio track received');
+            setSystemStatus('connected', 'Audio stream received');
           }
-        } catch(e){ log('ontrack error', e); }
+        } catch(e){ 
+          log('ontrack error', e);
+          setAvatarStatus('error', 'Connection Error');
+        }
       };
       state.control = state.pc.createDataChannel('control');
       state.control.onopen = ()=>{
-        setStatus('Connected');
+        setSystemStatus('connected', 'WebRTC connection established');
         state.connected = true;
+        state.connecting = false;
+        setButtonLoading(els.connect, false);
+        els.connect.disabled = true;
         els.disconnect.disabled = false;
+        showToast('WebRTC connection established', 'success');
+        
         if(state.referenceImage){
-          try { state.control.send(JSON.stringify({type:'set_reference', image_base64: state.referenceImage})); } catch(e) {}
+          try { 
+            state.control.send(JSON.stringify({type:'set_reference', image_base64: state.referenceImage}));
+            showToast('Reference image sent to avatar', 'success');
+          } catch(e) {
+            showToast('Failed to send reference image', 'error');
+          }
         }
         // Metrics polling
         state.metricsTimer = setInterval(()=>{
@@ -342,80 +497,151 @@
     if(state.control){ try { state.control.onmessage=null; state.control.close(); }catch(_){} }
     if(state.pc){ try { state.pc.ontrack=null; state.pc.onconnectionstatechange=null; state.pc.oniceconnectionstatechange=null; state.pc.onicegatheringstatechange=null; state.pc.close(); }catch(_){} }
     if(state.localStream){ try { state.localStream.getTracks().forEach(t=>t.stop()); } catch(_){} }
-    // Clear media elements
-    try { els.localVideo.srcObject = null; } catch(_){}
+    
+    // Clear media elements and UI state
+    try { 
+      els.localVideo.srcObject = null;
+      els.localWrapper.classList.remove('active');
+      setLocalStatus('idle', 'Inactive');
+    } catch(_){}
     try { 
       if (els.remoteVideo.srcObject) {
         els.remoteVideo.pause();
         els.remoteVideo.srcObject = null; 
       }
+      els.avatarWrapper.classList.remove('active');
+      setAvatarStatus('idle', 'Inactive');
     } catch(_){}
+    
+    // Reset metrics
+    updateMetrics('--', '--', '--', '--');
+    
     // Best-effort server cleanup
     try {
       const hdrs = {};
       if (state.authToken) hdrs['X-Auth-Token'] = state.authToken;
       await fetch('/webrtc/cleanup', {method:'POST', headers: hdrs});
     } catch(_){ }
+    
     state.pc=null; state.control=null; state.localStream=null; state.connected=false; state.connecting=false;
-    els.connect.disabled=false; els.disconnect.disabled=true; setStatus('Idle');
+    setButtonLoading(els.connect, false);
+    els.connect.disabled=false; els.disconnect.disabled=true; 
+    setSystemStatus('idle', 'Disconnected');
+    showToast('Connection terminated', 'warning');
   }
 
   els.ref.addEventListener('change', handleReference);
   if (els.init) {
     els.init.addEventListener('click', async ()=>{
       try {
-        setStatus('Initializing pipeline...');
-        els.init.disabled = true;
+        setSystemStatus('connecting', 'Initializing AI pipeline...');
+        setButtonLoading(els.init, true);
         const r = await fetch('/initialize', {method:'POST'});
         const j = await r.json().catch(()=>({}));
         if (r.ok && j && (j.status==='success' || j.status==='already_initialized')){
-          setStatus(j.message || 'Initialized');
+          state.initialized = true;
+          setSystemStatus('connected', j.message || 'Pipeline initialized');
+          showToast('AI pipeline initialized successfully', 'success');
+          els.init.classList.remove('btn-secondary');
+          els.init.classList.add('btn-success');
+          els.init.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+              <polyline points="22,4 12,14.01 9,11.01"/>
+            </svg>
+            Pipeline Ready
+          `;
         } else {
-          setStatus('Init failed');
+          setSystemStatus('error', 'Pipeline initialization failed');
+          showToast('Failed to initialize AI pipeline', 'error');
           console.warn('initialize response', r.status, j);
         }
       } catch(e){
-        setStatus('Init error');
+        setSystemStatus('error', 'Pipeline initialization error');
+        showToast('Error initializing AI pipeline', 'error');
       } finally {
-        els.init.disabled = false;
+        setButtonLoading(els.init, false);
       }
     });
   }
   if (els.debug) {
     els.debug.addEventListener('click', async ()=>{
       try {
-        setStatus('Fetching debug info...');
+        setSystemStatus('connecting', 'Fetching debug information...');
+        setButtonLoading(els.debug, true);
         const r = await fetch('/debug/models');
         const j = await r.json();
         console.log('[DEBUG] /debug/models', j);
+        
+        // Show debug info in toast
+        const modelCount = Object.keys(j.files || {}).length;
+        const existingModels = Object.values(j.files || {}).filter(f => f.exists).length;
+        showToast(`Debug: ${existingModels}/${modelCount} models loaded`, 'info');
+        
         const app = j.files?.['appearance_feature_extractor.onnx'];
         const motion = j.files?.['motion_extractor.onnx'];
-        let statusText = `ONNX: app=${app?.exists?'✔':'✖'}(${app?.size_bytes||0}), motion=${motion?.exists?'✔':'✖'}(${motion?.size_bytes||0})`;
-        setStatus(statusText);
-        // If missing, try to force a download now
-        if (!app?.exists) {
-          setStatus('Downloading models...');
+        const inswapper = j.files?.['inswapper_128_fp16.onnx'] || j.files?.['inswapper_128.onnx'];
+        
+        let statusText = `Models: InSwapper=${inswapper?.exists?'✓':'✗'}, App=${app?.exists?'✓':'✗'}, Motion=${motion?.exists?'✓':'✗'}`;
+        setSystemStatus(inswapper?.exists ? 'connected' : 'warning', statusText);
+        
+        // If missing critical models, try to download
+        if (!inswapper?.exists) {
+          setSystemStatus('connecting', 'Downloading models...');
           try {
             const d = await fetch('/debug/download_models', {method:'POST'});
             const dj = await d.json().catch(()=>({}));
             console.log('[DEBUG] /debug/download_models', dj);
-            // Refresh presence
-            const r2 = await fetch('/debug/models');
-            const j2 = await r2.json();
-            const app2 = j2.files?.['appearance_feature_extractor.onnx'];
-            const motion2 = j2.files?.['motion_extractor.onnx'];
-            statusText = `ONNX: app=${app2?.exists?'✔':'✖'}(${app2?.size_bytes||0}), motion=${motion2?.exists?'✔':'✖'}(${motion2?.size_bytes||0})`;
-            setStatus(statusText);
-          } catch(e){
+            showToast('Model download initiated', 'info');
+            
+            // Refresh model status
+            setTimeout(async () => {
+              const r2 = await fetch('/debug/models');
+              const j2 = await r2.json();
+              const inswapper2 = j2.files?.['inswapper_128_fp16.onnx'] || j2.files?.['inswapper_128.onnx'];
+              const newStatus = `Models refreshed: InSwapper=${inswapper2?.exists?'✓':'✗'}`;
+              setSystemStatus(inswapper2?.exists ? 'connected' : 'warning', newStatus);
+            }, 2000);
+          } catch(e) {
+            showToast('Model download failed', 'error');
             console.warn('download_models failed', e);
-            setStatus('Download failed');
           }
         }
       } catch(e){
-        setStatus('Debug fetch failed');
+        setSystemStatus('error', 'Debug fetch failed');
+        showToast('Failed to fetch debug information', 'error');
+      } finally {
+        setButtonLoading(els.debug, false);
       }
     });
   }
+
+  // Update performance metrics display
+  function updatePerf(metrics) {
+    try {
+      const latency = metrics.latency_ms ? `${Math.round(metrics.latency_ms)}` : '--';
+      const fps = metrics.fps ? `${Math.round(metrics.fps)}` : '--';
+      const gpu = metrics.gpu_memory_used_mb ? `${Math.round(metrics.gpu_memory_used_mb)}MB` : '--';
+      const quality = metrics.quality || (fps > 25 ? 'HD' : fps > 15 ? 'SD' : 'Low');
+      
+      updateMetrics(latency, fps, gpu, quality);
+      
+      // Update connection quality indicator
+      if (metrics.latency_ms) {
+        if (metrics.latency_ms < 100) {
+          setAvatarStatus('connected', 'Excellent');
+        } else if (metrics.latency_ms < 250) {
+          setAvatarStatus('connected', 'Good');
+        } else {
+          setAvatarStatus('warning', 'High Latency');
+        }
+      }
+    } catch(e) {
+      console.warn('updatePerf error', e);
+    }
+  }
+
+  // Event listeners
   els.connect.addEventListener('click', connect);
   els.disconnect.addEventListener('click', disconnect);
 
