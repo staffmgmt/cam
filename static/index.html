@@ -516,19 +516,8 @@
 </head>
 <body>
   <div class="app-container">
-    <div class="top-bar" role="toolbar" aria-label="Primary Controls">
+    <div class="top-bar" role="banner" aria-label="Connection Status">
       <span class="brand" aria-label="Mirage Brand">Mirage</span>
-      <div class="top-bar-group" id="primaryButtons">
-        <button id="tbInit" class="btn btn-secondary" aria-label="Initialize AI Pipeline">Init</button>
-        <button id="tbConnect" class="btn btn-primary" aria-label="Connect WebRTC">Connect</button>
-        <button id="tbDisconnect" class="btn btn-danger" aria-label="Disconnect WebRTC" disabled>Disconnect</button>
-        <label class="file-upload" style="margin:0;">
-          <input type="file" id="tbReferenceInput" accept="image/*" aria-label="Upload Reference Image" />
-          <div class="file-upload-button" id="tbUploadButton" style="padding:0.55rem 0.8rem; font-size:0.65rem; border-style:solid;">
-            <span id="tbUploadText">Ref Img</span>
-          </div>
-        </label>
-      </div>
       <div class="timeline" aria-label="Connection Stages" id="stageTimeline">
         <span class="stage-step" data-stage="init">Init</span>
         <span class="stage-step" data-stage="local-media">Media</span>
