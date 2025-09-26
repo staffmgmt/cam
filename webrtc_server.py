@@ -493,6 +493,7 @@ class PeerState:
 _peer_state: Optional[PeerState] = None
 _peer_lock = asyncio.Lock()
 _last_peer_snapshot: Optional[dict[str, Any]] = None
+_negotiation_events: list[dict[str, Any]] = []  # rolling recent negotiation stage events
 
 
 class IncomingVideoTrack(MediaStreamTrack):
@@ -899,6 +900,14 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
 
     def stage(msg: str, level: str = "info"):
         line = f"[{negotiation_id}] {msg}"
+        evt = {"ts": time.time(), "negotiation_id": negotiation_id, "msg": msg, "level": level}
+        try:
+            _negotiation_events.append(evt)
+            # Keep only last 80 events
+            if len(_negotiation_events) > 80:
+                del _negotiation_events[: len(_negotiation_events) - 80]
+        except Exception:
+            pass
         if level == "error":
             logger.error(line)
         elif level == "warning":
@@ -1495,6 +1504,74 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     if DEBUG_NEG:
         payload["negotiation_id"] = negotiation_id
     return payload
+
+@router.get("/negotiations")
+async def negotiations():
+    """Return recent negotiation stage events and last peer snapshot.
+
+    Useful when /webrtc/ice_stats shows inactive (active:false) to see how far
+    the last negotiation progressed before failure.
+    """
+    try:
+        return {
+            "events": _negotiation_events[-50:],  # last 50 for brevity
+            "last_peer_snapshot": _last_peer_snapshot,
+            "active": _peer_state is not None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.get("/ice_gather_test")
+async def ice_gather_test():
+    """Perform a standalone ICE gathering cycle (no media) to enumerate local candidates.
+
+    This helps distinguish TURN credential / gathering failures from SDP / negotiation issues.
+    """
+    if not AIORTC_AVAILABLE:
+        raise HTTPException(status_code=503, detail="aiortc unavailable")
+    try:
+        cfg = _ice_configuration()
+        pc = RTCPeerConnection(configuration=cfg)
+        # Create a dummy data channel to ensure ICE starts
+        try:
+            pc.createDataChannel("probe")
+        except Exception:
+            pass
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        # Wait for iceGatheringState complete or timeout
+        t0 = time.time()
+        while pc.iceGatheringState != 'complete' and (time.time() - t0) < 6.0:
+            await asyncio.sleep(0.2)
+        stats = await pc.getStats()
+        summary = {
+            'local_candidates': 0,
+            'local_types': {},
+            'elapsed_ms': int((time.time() - t0) * 1000),
+            'gathering_state': pc.iceGatheringState,
+        }
+        candidate_details = []
+        for sid, rep in stats.items():
+            tp = getattr(rep, 'type', None)
+            if tp == 'local-candidate':
+                summary['local_candidates'] += 1
+                ctype = getattr(rep, 'candidateType', 'unknown')
+                summary['local_types'][ctype] = summary['local_types'].get(ctype, 0) + 1
+                if len(candidate_details) < 25:  # cap to avoid huge payloads
+                    candidate_details.append({
+                        'type': ctype,
+                        'protocol': getattr(rep, 'protocol', None),
+                        'address': getattr(rep, 'address', None),
+                        'port': getattr(rep, 'port', None),
+                    })
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        summary['candidates'] = candidate_details
+        return summary
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.get("/token")
