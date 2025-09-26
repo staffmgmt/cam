@@ -1532,23 +1532,37 @@ async def ice_gather_test():
     try:
         cfg = _ice_configuration()
         pc = RTCPeerConnection(configuration=cfg)
-        # Create a dummy data channel to ensure ICE starts
+        # Force creation of audio+video transceivers; some stacks gather more
+        # aggressively when media components exist vs. data-only.
+        try:
+            pc.addTransceiver('audio', direction='recvonly')
+        except Exception:
+            pass
+        try:
+            pc.addTransceiver('video', direction='recvonly')
+        except Exception:
+            pass
+        # Create data channel to exercise SCTP as well
         try:
             pc.createDataChannel("probe")
         except Exception:
             pass
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
-        # Wait for iceGatheringState complete or timeout
         t0 = time.time()
-        while pc.iceGatheringState != 'complete' and (time.time() - t0) < 6.0:
-            await asyncio.sleep(0.2)
+        # Wait at least one loop tick even if state flips to complete instantly
+        await asyncio.sleep(0.3)
+        while pc.iceGatheringState != 'complete' and (time.time() - t0) < 8.0:
+            await asyncio.sleep(0.25)
         stats = await pc.getStats()
         summary = {
             'local_candidates': 0,
             'local_types': {},
             'elapsed_ms': int((time.time() - t0) * 1000),
             'gathering_state': pc.iceGatheringState,
+            'ice_servers_supplied': [
+                s.urls if isinstance(s.urls, list) else s.urls for s in cfg.iceServers
+            ],
         }
         candidate_details = []
         for sid, rep in stats.items():
@@ -1557,19 +1571,58 @@ async def ice_gather_test():
                 summary['local_candidates'] += 1
                 ctype = getattr(rep, 'candidateType', 'unknown')
                 summary['local_types'][ctype] = summary['local_types'].get(ctype, 0) + 1
-                if len(candidate_details) < 25:  # cap to avoid huge payloads
+                if len(candidate_details) < 40:
                     candidate_details.append({
                         'type': ctype,
                         'protocol': getattr(rep, 'protocol', None),
                         'address': getattr(rep, 'address', None),
                         'port': getattr(rep, 'port', None),
+                        'foundation': getattr(rep, 'foundation', None),
                     })
         try:
             await pc.close()
         except Exception:
             pass
         summary['candidates'] = candidate_details
+        if summary['local_candidates'] == 0:
+            summary['note'] = 'No local candidates gathered. Possible TURN auth or interface enumeration failure.'
         return summary
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.get("/net_info")
+async def net_info():
+    """Enumerate local network interfaces & IPv4/IPv6 addresses to explain absence of host candidates."""
+    import socket
+    info = []
+    try:
+        # socket.getaddrinfo on hostname
+        try:
+            hn = socket.gethostname()
+            host_addrs = list({ai[4][0] for ai in socket.getaddrinfo(hn, None) if ai and ai[4]})
+        except Exception as e:
+            host_addrs = [f"error:{e}"]
+        # Iterate common interfaces via /sys/class/net (Linux in HF Spaces)
+        sys_net = '/sys/class/net'
+        if os.path.isdir(sys_net):
+            for iface in os.listdir(sys_net):
+                if iface.startswith('lo'):
+                    continue
+                addrs = []
+                try:
+                    # Attempt IPv4 probe using dummy UDP socket bind trick
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    try:
+                        s.connect(('8.8.8.8', 80))
+                        addrs.append(s.getsockname()[0])
+                    except Exception:
+                        pass
+                    finally:
+                        s.close()
+                except Exception:
+                    pass
+                info.append({"iface": iface, "addresses": list(set(addrs))})
+        return {"hostname_addrs": host_addrs, "ifaces": info}
     except Exception as e:
         return {"error": str(e)}
 
