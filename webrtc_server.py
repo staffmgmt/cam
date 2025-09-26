@@ -1122,51 +1122,57 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     # Prior implementation used addTrack (sendonly) which prevented inbound video track reception on some browsers,
     # leading to perpetual placeholder frames / black output. This explicit transceiver resolves that.
     try:
-        # If a video transceiver already exists (e.g., due to renegotiation attempt) reuse it
-        existing_video = None
-        for tr in pc.getTransceivers():
-            if tr.kind == 'video':
-                existing_video = tr
+        # Attempt to reuse an existing sender first to avoid duplicate binding errors
+        existing_sender = None
+        for s in pc.getSenders():
+            trk = getattr(s, 'track', None)
+            if trk and getattr(trk, 'kind', None) == 'video':
+                existing_sender = s
                 break
-        if existing_video is None:
-            video_trans = pc.addTransceiver('video', direction='sendrecv')
-            stage("outbound_video_transceiver_created")
+        if existing_sender:
+            # Replace existing track only if different
+            if existing_sender.track != outbound_video:
+                await existing_sender.replaceTrack(outbound_video)
+                stage("outbound_video_sender_replaced_existing")
+            else:
+                stage("outbound_video_sender_prebound")
         else:
-            video_trans = existing_video
-            # Ensure direction is at least sendrecv
+            # No existing video sender; try transceiver path first
             try:
-                if getattr(video_trans, 'direction', None) != 'sendrecv':
-                    video_trans.direction = 'sendrecv'
-            except Exception:
-                pass
-            stage("outbound_video_transceiver_reused")
-        # Only replace track if the sender has no track or a different one
-        if getattr(video_trans.sender, 'track', None) != outbound_video:
-            await video_trans.sender.replaceTrack(outbound_video)
-            stage("outbound_video_sender_bound")
-        else:
-            stage("outbound_video_sender_already_bound")
-        try:
-            params = video_trans.sender.getParameters()
-            if params and hasattr(params, 'encodings'):
-                if not params.encodings:
-                    params.encodings = [{}]
-                for enc in params.encodings:
-                    enc['maxBitrate'] = min(enc.get('maxBitrate', 300_000), 300_000)
-                    enc.setdefault('scaleResolutionDownBy', 2.0)
-                    enc.setdefault('degradationPreference', 'maintain-resolution')
-            video_trans.sender.setParameters(params)
-        except Exception:
-            pass
+                video_trans = pc.addTransceiver('video', direction='sendrecv')
+                stage("outbound_video_transceiver_created")
+                await video_trans.sender.replaceTrack(outbound_video)
+                stage("outbound_video_sender_bound")
+                try:
+                    params = video_trans.sender.getParameters()
+                    if params and hasattr(params, 'encodings'):
+                        if not params.encodings:
+                            params.encodings = [{}]
+                        for enc in params.encodings:
+                            enc['maxBitrate'] = min(enc.get('maxBitrate', 300_000), 300_000)
+                            enc.setdefault('scaleResolutionDownBy', 2.0)
+                            enc.setdefault('degradationPreference', 'maintain-resolution')
+                    video_trans.sender.setParameters(params)
+                except Exception:
+                    pass
+            except Exception as te:
+                stage(f"transceiver_path_failed: {te}", level='warning')
+                # Fallback to addTrack
+                try:
+                    sender = pc.addTrack(outbound_video)
+                    stage("outbound_video_added_fallback")
+                except Exception as e2:
+                    if 'Track already has a sender' in str(e2):
+                        # Benign: treat as success (track was already bound earlier in this negotiation)
+                        stage("outbound_video_add_already_bound_ignored")
+                    else:
+                        stage(f"outbound_video_add_failed: {e2}", level='error')
+                        raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e2}")
+    except HTTPException:
+        raise
     except Exception as e:
-        stage(f"outbound_video_transceiver_failed: {e}", level="warning")
-        # Fallback to legacy addTrack path
-        try:
-            sender = pc.addTrack(outbound_video)
-            stage("outbound_video_added_fallback")
-        except Exception as e2:
-            stage(f"outbound_video_add_failed: {e2}", level="error")
-            raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e2}")
+        stage(f"outbound_video_setup_unexpected: {e}", level='error')
+        raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
 
     # Proactively create an audio transceiver (recvonly) so inbound audio is not blocked by lack of direction
     try:
