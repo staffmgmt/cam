@@ -61,7 +61,18 @@
     
     // Toast
     toast: document.getElementById('toast'),
-    toastContent: document.getElementById('toastContent')
+    toastContent: document.getElementById('toastContent'),
+    tbInit: document.getElementById('tbInit'),
+    tbConnect: document.getElementById('tbConnect'),
+    tbDisconnect: document.getElementById('tbDisconnect'),
+    tbRef: document.getElementById('tbReferenceInput'),
+    tbUploadButton: document.getElementById('tbUploadButton'),
+    tbUploadText: document.getElementById('tbUploadText'),
+    stageTimeline: document.getElementById('stageTimeline'),
+    connectionPathBadge: document.getElementById('connectionPathBadge'),
+    miniLatency: document.getElementById('miniLatency'),
+    miniFps: document.getElementById('miniFps'),
+    frameCounterDisplay: document.getElementById('frameCounterDisplay')
   };
 
   // Utility Functions
@@ -116,6 +127,8 @@
     if (els.fpsValue) els.fpsValue.textContent = fps || '--';
     if (els.gpuValue) els.gpuValue.textContent = gpu || '--';
     if (els.qualityValue) els.qualityValue.textContent = quality || '--';
+    if (els.miniLatency) els.miniLatency.textContent = 'L:' + (latency || '--');
+    if (els.miniFps) els.miniFps.textContent = 'FPS:' + (fps || '--');
   }
 
   function setButtonLoading(button, loading = true) {
@@ -136,6 +149,78 @@
 
   function setStatus(txt) { 
     setSystemStatus('idle', txt);
+  }
+
+  /* ---------------- Stage / Timeline Management ---------------- */
+  const stageOrder = ['init','local-media','offer-sent','ice-gathering','answer-received','remote-media','connected'];
+  function setStage(newStage){
+    if(!els.stageTimeline) return;
+    if(!stageOrder.includes(newStage)) return;
+    const steps = els.stageTimeline.querySelectorAll('.stage-step');
+    const currentIndex = stageOrder.indexOf(newStage);
+    steps.forEach(step => {
+      const s = step.getAttribute('data-stage');
+      step.classList.remove('active','done');
+      if (s === newStage) step.classList.add('active');
+      else if (stageOrder.indexOf(s) < currentIndex) step.classList.add('done');
+    });
+    const lr = document.getElementById('liveStatus');
+    if (lr) lr.textContent = 'Stage: ' + newStage;
+  }
+  setStage('init');
+
+  /* --------------- Frame Counter & Black Frame Detection --------------- */
+  let framePollTimer = null;
+  let blackDetectTimer = null;
+  let blackSampleConsecutive = 0;
+  const BLACK_THRESHOLD = 8;
+  const BLACK_CONSECUTIVE_LIMIT = 5;
+  function startFrameCounterPolling(){
+    if(framePollTimer) clearInterval(framePollTimer);
+    framePollTimer = setInterval(async ()=>{
+      try {
+        const r = await fetch('/webrtc/frame_counter');
+        if(!r.ok) return;
+        const j = await r.json();
+        if (j && j.frames_emitted != null && els.frameCounterDisplay) {
+          els.frameCounterDisplay.textContent = 'Frames:' + j.frames_emitted;
+        }
+      } catch(_){ }
+    }, 2000);
+  }
+  function startBlackDetection(){
+    if(blackDetectTimer) clearInterval(blackDetectTimer);
+    const vid = els.remoteVideo; const overlay = els.avatarOverlay;
+    if(!vid) return;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    blackDetectTimer = setInterval(()=>{
+      if(!vid.videoWidth || !vid.videoHeight) return;
+      canvas.width = 80; canvas.height = 45;
+      try {
+        ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+        const data = ctx.getImageData(0,0,canvas.width, canvas.height).data;
+        let sum = 0, count = 0;
+        for (let i=0;i<data.length;i+=4){ sum += (data[i]*0.2126 + data[i+1]*0.7152 + data[i+2]*0.0722); count++; }
+        const avg = sum / count;
+        if (avg < BLACK_THRESHOLD) blackSampleConsecutive++; else blackSampleConsecutive = 0;
+        if (overlay){
+          if (blackSampleConsecutive >= BLACK_CONSECUTIVE_LIMIT){
+            overlay.style.opacity = 1;
+            overlay.innerHTML = '<span>Receiving black/placeholder frames... (pipeline warming or no source)</span>';
+          } else if (blackSampleConsecutive === 0 && overlay.innerText.includes('black/placeholder')) {
+            overlay.style.opacity = 0;
+          }
+        }
+      } catch(_){ }
+    }, 1000);
+  }
+
+  function setConnectionPathBadge(relay){
+    if(!els.connectionPathBadge) return;
+    els.connectionPathBadge.textContent = relay ? 'Relay (TURN)' : 'Direct';
+    els.connectionPathBadge.classList.remove('relay','direct');
+    els.connectionPathBadge.classList.add(relay ? 'relay':'direct');
   }
 
   // WebRTC Diagnostics
@@ -259,6 +344,7 @@
     if (state.connected || state.connecting) return;
     
     try {
+      setStage('init');
       setSystemStatus('connecting', 'Requesting camera access...');
       setLocalStatus('connecting', 'Initializing');
       setButtonLoading(els.connect, true);
@@ -289,10 +375,11 @@
       } catch(_) {}
 
       // Get user media
-      state.localStream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
+  state.localStream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
       els.localVideo.srcObject = state.localStream;
       if (els.localWrapper) els.localWrapper.classList.add('active');
       setLocalStatus('connected', 'Camera Active');
+  setStage('local-media');
       
       try { 
         els.localVideo.play && els.localVideo.play(); 
@@ -337,6 +424,24 @@
         
         if (st === 'connected' && !statsTimer) {
           statsTimer = setInterval(collectStats, STATS_INTERVAL_MS);
+          setStage('connected');
+          // Determine connection path from stats
+          setTimeout(async () => {
+            try {
+              const stats = await state.pc.getStats();
+              for (const r of stats.values()) {
+                if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) {
+                  const local = stats.get(r.localCandidateId);
+                  const remote = stats.get(r.remoteCandidateId);
+                  if (local && remote) {
+                    const relay = (local.candidateType === 'relay') || (remote.candidateType === 'relay');
+                    setConnectionPathBadge(relay);
+                    break;
+                  }
+                }
+              }
+            } catch(_){ }
+          }, 500);
         }
         
         if (st === 'disconnected') {
@@ -382,6 +487,7 @@
           if (tr && tr.kind === 'video') {
             setSystemStatus('connected', 'Avatar stream received');
             setAvatarStatus('connected', 'Active');
+            setStage('remote-media');
             
             let stream;
             if (ev.streams && ev.streams[0]) {
@@ -397,6 +503,8 @@
             els.remoteVideo.srcObject = null;
             els.remoteVideo.srcObject = stream;
             if (els.avatarWrapper) els.avatarWrapper.classList.add('active');
+            startFrameCounterPolling();
+            startBlackDetection();
             
             // Video event handlers
             els.remoteVideo.onloadeddata = () => {
@@ -453,6 +561,7 @@
         setSystemStatus('connected', 'WebRTC connection established');
         state.connected = true;
         state.connecting = false;
+        setStage('connected');
         setButtonLoading(els.connect, false);
         els.connect.disabled = true;
         els.disconnect.disabled = false;
@@ -494,8 +603,9 @@
       state.localStream.getTracks().forEach(t => state.pc.addTrack(t, state.localStream));
 
       // Create offer
-      const offer = await state.pc.createOffer({offerToReceiveAudio: true, offerToReceiveVideo: true});
-      await state.pc.setLocalDescription(offer);
+  const offer = await state.pc.createOffer({offerToReceiveAudio: true, offerToReceiveVideo: true});
+  await state.pc.setLocalDescription(offer);
+  setStage('offer-sent');
 
       // Wait for ICE gathering
       setSystemStatus('connecting', 'Gathering ICE candidates...');
@@ -509,6 +619,7 @@
           }
         };
       });
+      setStage('ice-gathering');
 
       // Send offer to server
       setSystemStatus('connecting', 'Negotiating connection...');
@@ -535,8 +646,9 @@
         throw new Error(`Server returned ${r.status}: ${bodyText}`);
       }
 
-      const answer = await r.json();
-      await state.pc.setRemoteDescription(new RTCSessionDescription(answer));
+  const answer = await r.json();
+  await state.pc.setRemoteDescription(new RTCSessionDescription(answer));
+  setStage('answer-received');
       log('WebRTC negotiation complete');
 
     } catch(e) {

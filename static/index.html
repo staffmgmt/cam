@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Mirage AI Avatar Studio</title>
+  <title>Mirage</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -53,6 +53,35 @@
       line-height: 1.6;
       overflow-x: hidden;
     }
+
+    .visually-hidden { position:absolute !important; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+
+    /* Fixed top control bar */
+    .top-bar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(20,20,24,0.95);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+      padding: 0.5rem 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+    }
+  .top-bar .brand { font-weight:600; letter-spacing:0.5px; background: var(--gradient-primary); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+    .top-bar-group { display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; }
+    .timeline { display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; }
+    .stage-step { position:relative; padding:0.25rem 0.55rem; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.08em; border-radius:0.4rem; background: var(--bg-tertiary); color: var(--text-tertiary); border:1px solid var(--border-light); }
+    .stage-step.active { background: var(--primary); color:#fff; border-color: var(--primary-dark); }
+    .stage-step.done { background: var(--success); color:#fff; border-color: var(--success); }
+    .conn-badge { font-size:0.65rem; padding:0.35rem 0.55rem; border-radius:0.4rem; background:var(--bg-tertiary); border:1px solid var(--border-light); color:var(--text-secondary); }
+    .conn-badge.relay { background: linear-gradient(135deg,#0f766e,#0891b2); color:#fff; }
+    .conn-badge.direct { background: linear-gradient(135deg,#166534,#22c55e); color:#fff; }
+    .mini-metric { font-size:0.65rem; padding:0.25rem 0.5rem; border-radius:0.4rem; background:var(--bg-tertiary); color:var(--text-tertiary); }
+    .top-bar button.btn { padding:0.5rem 0.9rem; font-size:0.7rem; }
+    @media (max-width: 840px){ .timeline { order: 3; width:100%; } }
     
     .app-container {
       min-height: 100vh;
@@ -487,6 +516,33 @@
 </head>
 <body>
   <div class="app-container">
+    <div class="top-bar" role="toolbar" aria-label="Primary Controls">
+      <span class="brand" aria-label="Mirage Brand">Mirage</span>
+      <div class="top-bar-group" id="primaryButtons">
+        <button id="tbInit" class="btn btn-secondary" aria-label="Initialize AI Pipeline">Init</button>
+        <button id="tbConnect" class="btn btn-primary" aria-label="Connect WebRTC">Connect</button>
+        <button id="tbDisconnect" class="btn btn-danger" aria-label="Disconnect WebRTC" disabled>Disconnect</button>
+        <label class="file-upload" style="margin:0;">
+          <input type="file" id="tbReferenceInput" accept="image/*" aria-label="Upload Reference Image" />
+          <div class="file-upload-button" id="tbUploadButton" style="padding:0.55rem 0.8rem; font-size:0.65rem; border-style:solid;">
+            <span id="tbUploadText">Ref Img</span>
+          </div>
+        </label>
+      </div>
+      <div class="timeline" aria-label="Connection Stages" id="stageTimeline">
+        <span class="stage-step" data-stage="init">Init</span>
+        <span class="stage-step" data-stage="local-media">Media</span>
+        <span class="stage-step" data-stage="offer-sent">Offer</span>
+        <span class="stage-step" data-stage="ice-gathering">ICE</span>
+        <span class="stage-step" data-stage="answer-received">Answer</span>
+        <span class="stage-step" data-stage="remote-media">Video</span>
+        <span class="stage-step" data-stage="connected">Ready</span>
+      </div>
+      <span id="connectionPathBadge" class="conn-badge" aria-live="polite">Path ?</span>
+      <span id="miniLatency" class="mini-metric" aria-label="Latency">L:--</span>
+      <span id="miniFps" class="mini-metric" aria-label="Frames Per Second">FPS:--</span>
+      <span id="frameCounterDisplay" class="mini-metric" aria-label="Emitted Frames">Frames:--</span>
+    </div>
     <div class="container">
       <div class="header">
         <h1>Mirage AI Avatar Studio</h1>
@@ -615,6 +671,8 @@
       </div>
     </div>
   </div>
+
+  <div id="liveStatus" class="visually-hidden" aria-live="polite"></div>
 
   <div class="toast" id="toast">
     <div id="toastContent"></div>
