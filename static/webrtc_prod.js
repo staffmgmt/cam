@@ -155,7 +155,8 @@
       try {
         const ic = await fetch('/webrtc/ice_config');
         if (ic.ok) { iceCfg = await ic.json(); }
-      } catch(_){}
+      } catch(_){ }
+      state._lastIceCfg = iceCfg; // keep for potential retry decision
       if (overrideRelay || FORCE_RELAY_URL || iceCfg.forceRelay === true) { iceCfg.iceTransportPolicy = 'relay'; }
       log('ice config', iceCfg);
   state.pc = new RTCPeerConnection(iceCfg);
@@ -183,15 +184,19 @@
         }
         if(['failed','closed'].includes(st)){
           if(statsTimer){ clearInterval(statsTimer); statsTimer=null; }
-          const tryRelay = !state._usedRelay && !state._relayFallbackTried;
+          const hasTurn = state._lastIceCfg && (state._lastIceCfg.turnCount||0) > 0;
+          const tryRelay = hasTurn && !state._usedRelay && !state._relayFallbackTried;
           const snapshot = diagSnapshot();
-            vlog('Final failure snapshot', snapshot);
+          vlog('Final failure snapshot', snapshot, {hasTurn, usedRelay: state._usedRelay, relayTried: state._relayFallbackTried});
           disconnect().then(()=>{
             if (tryRelay) {
               state._relayFallbackTried = true;
               log('retrying with relay-only');
               setStatus('Retrying with TURN relay');
               connect({forceRelay:true});
+            } else if (!hasTurn && !state._usedRelay && !state._relayFallbackTried) {
+              log('skipping relay-only retry: no TURN servers available');
+              setStatus('No TURN servers; cannot retry relay-only');
             }
           });
         }

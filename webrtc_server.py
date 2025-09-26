@@ -196,21 +196,34 @@ async def webrtc_ice_config():
     """
     try:
         cfg = _ice_configuration()
-        servers = []
+        servers: list[dict[str, object]] = []
+        stun_count = 0
+        turn_count = 0
         for s in cfg.iceServers:
-            entry = {"urls": s.urls}
+            entry: dict[str, object] = {"urls": s.urls}
+            # Classify counts (s.urls may be list or str)
+            urls_list = s.urls if isinstance(s.urls, list) else [s.urls]
+            for u in urls_list:
+                if isinstance(u, str):
+                    if u.startswith('turn'):
+                        turn_count += 1
+                    elif u.startswith('stun'):
+                        stun_count += 1
             if getattr(s, 'username', None):
                 entry["username"] = s.username
             if getattr(s, 'credential', None):
                 entry["credential"] = s.credential
             servers.append(entry)
-        payload = {"iceServers": servers}
+        payload: dict[str, object] = {"iceServers": servers, "stunCount": stun_count, "turnCount": turn_count}
         if FORCE_RELAY:
             payload["forceRelay"] = True
+            if turn_count == 0:
+                # Hint to client that relay-only will fail with no TURN
+                payload["relayOnlyWarning"] = "FORCE_RELAY enabled but no TURN servers available"
         return payload
     except Exception as e:
         # Fallback to public STUN
-        return {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}], "error": str(e)}
+        return {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}], "error": str(e), "stunCount": 1, "turnCount": 0}
 
 
 @router.get("/debug_state")
