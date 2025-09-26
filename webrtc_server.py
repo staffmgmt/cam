@@ -1122,9 +1122,30 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     # Prior implementation used addTrack (sendonly) which prevented inbound video track reception on some browsers,
     # leading to perpetual placeholder frames / black output. This explicit transceiver resolves that.
     try:
-        video_trans = pc.addTransceiver('video', direction='sendrecv')
-        await video_trans.sender.replaceTrack(outbound_video)
-        stage("outbound_video_transceiver_added")
+        # If a video transceiver already exists (e.g., due to renegotiation attempt) reuse it
+        existing_video = None
+        for tr in pc.getTransceivers():
+            if tr.kind == 'video':
+                existing_video = tr
+                break
+        if existing_video is None:
+            video_trans = pc.addTransceiver('video', direction='sendrecv')
+            stage("outbound_video_transceiver_created")
+        else:
+            video_trans = existing_video
+            # Ensure direction is at least sendrecv
+            try:
+                if getattr(video_trans, 'direction', None) != 'sendrecv':
+                    video_trans.direction = 'sendrecv'
+            except Exception:
+                pass
+            stage("outbound_video_transceiver_reused")
+        # Only replace track if the sender has no track or a different one
+        if getattr(video_trans.sender, 'track', None) != outbound_video:
+            await video_trans.sender.replaceTrack(outbound_video)
+            stage("outbound_video_sender_bound")
+        else:
+            stage("outbound_video_sender_already_bound")
         try:
             params = video_trans.sender.getParameters()
             if params and hasattr(params, 'encodings'):
