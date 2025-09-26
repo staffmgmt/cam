@@ -454,20 +454,30 @@ class PeerState:
     last_ice_state: Optional[str] = None
     cleanup_task: Optional[asyncio.Task] = None
     outbound_video: Optional['OutboundVideoTrack'] = None
+    incoming_video_track: Optional['IncomingVideoTrack'] = None
     ice_samples: list[dict[str, Any]] = None  # rolling ICE stats snapshots
     ice_sampler_task: Optional[asyncio.Task] = None
     ice_watchdog_task: Optional[asyncio.Task] = None
+    received_video: bool = False
+    received_audio: bool = False
+    incoming_frames: int = 0
+    incoming_first_frame_ts: Optional[float] = None
+    last_disconnect_reason: Optional[str] = None
+    outbound_sender_mid: Optional[str] = None
+    outbound_bind_method: Optional[str] = None
+    outbound_sender_bind_ts: Optional[float] = None
 
 
 # In-memory single peer (extend to dict for multi-user)
 _peer_state: Optional[PeerState] = None
 _peer_lock = asyncio.Lock()
+_last_peer_snapshot: Optional[dict[str, Any]] = None
 
 
 class IncomingVideoTrack(MediaStreamTrack):
     kind = "video"
 
-    def __init__(self, track: MediaStreamTrack):
+    def __init__(self, track: MediaStreamTrack, peer_state: Optional[PeerState] = None):
         super().__init__()  # base init
         self.track = track
         self.pipeline = get_pipeline()
@@ -475,6 +485,7 @@ class IncomingVideoTrack(MediaStreamTrack):
         self._last_processed: Optional[np.ndarray] = None
         self._processing_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        self._peer_state_ref = peer_state
         # Latency / timing metrics
         self._capture_ts: Optional[float] = None
         self._last_latency_ms: Optional[float] = None
@@ -495,6 +506,13 @@ class IncomingVideoTrack(MediaStreamTrack):
     async def recv(self):  # type: ignore[override]
         frame = await self.track.recv()
         self._raw_frames_in += 1
+        if self._peer_state_ref is not None:
+            try:
+                self._peer_state_ref.incoming_frames += 1
+                if self._peer_state_ref.incoming_first_frame_ts is None:
+                    self._peer_state_ref.incoming_first_frame_ts = time.time()
+            except Exception:
+                pass
         if self._raw_frames_in == 1:
             try:
                 logger.info("IncomingVideoTrack first frame received size=%sx%s" % (getattr(frame, 'width', '?'), getattr(frame, 'height', '?')))
@@ -854,7 +872,7 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     ever creates the *answer*. This endpoint performs no browser/client-side
     JS; it strictly handles SDP, media track plumbing and pipeline binding.
     """
-    global _peer_state  # declare once at top to avoid 'used prior to global declaration'
+    global _peer_state, _last_peer_snapshot  # declare once at top to avoid 'used prior to global declaration'
     negotiation_id = f"neg-{int(time.time()*1000)}-{random.randint(1000,9999)}"  # best-effort unique ID
     DEBUG_NEG = os.getenv("MIRAGE_DEBUG_NEGOTIATION", "0").strip().lower() in {"1","true","yes","on"}
 
@@ -899,6 +917,13 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                 stage("pipeline_reset_for_new_offer")
             except Exception as e:
                 stage(f"pipeline_reset_failed: {e}", level="warning")
+            _last_peer_snapshot = {
+                "event": "pre_offer_cleanup",
+                "connection_state": getattr(_peer_state, 'last_connection_state', None),
+                "ice_state": getattr(_peer_state, 'last_ice_state', None),
+                "received_video": getattr(_peer_state, 'received_video', False),
+                "incoming_frames": getattr(_peer_state, 'incoming_frames', 0),
+            }
             _peer_state = None
 
     ice_config = _ice_configuration()
@@ -918,6 +943,21 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
     
     pc = RTCPeerConnection(configuration=ice_config)
     blackhole = MediaBlackhole()  # optional sink
+
+    try:
+        outbound_video = OutboundVideoTrack()
+        stage("outbound_video_constructed")
+    except Exception as e:
+        stage(f"outbound_video_construct_failed: {e}", level="error")
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
+
+    _peer_state = PeerState(pc=pc, created=time.time(), outbound_video=outbound_video)
+    _peer_state.ice_samples = []
+    _last_peer_snapshot = None
 
     @pc.on("datachannel")
     def on_datachannel(channel):
@@ -1091,30 +1131,84 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             logger.info("ICE gathering complete (end-of-candidates)")
     
 
-    # Prepare outbound video first and register track handler before remote description,
-    # so we don't miss the initial 'track' events fired during setRemoteDescription.
-    try:
-        outbound_video = OutboundVideoTrack()
-        stage("outbound_video_constructed")
-    except Exception as e:
-        stage(f"outbound_video_construct_failed: {e}", level="error")
-        raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
-
     @pc.on("track")
     def on_track(track):
         logger.info("Track received: %s", track.kind)
         if track.kind == "video":
-            local = IncomingVideoTrack(track)
+            state_ref = _peer_state
+            local = IncomingVideoTrack(track, state_ref)
+            if state_ref is not None:
+                try:
+                    state_ref.incoming_video_track = local
+                except Exception:
+                    pass
             try:
                 outbound_video.set_source(local)
                 logger.info("Outbound video source bound to incoming video")
             except Exception as e:
                 logger.error(f"video source assign error: {e}")
+                if state_ref is not None:
+                    state_ref.last_disconnect_reason = f"video_source_assign_error:{e}"
+                return
+
+            async def _bind_outbound_sender():
+                bound_method = None
+                try:
+                    transceiver = None
+                    for trans in pc.getTransceivers():
+                        try:
+                            recv = getattr(trans, "receiver", None)
+                            if recv is not None and getattr(recv, "track", None) is track:
+                                transceiver = trans
+                                break
+                        except Exception:
+                            continue
+                    if transceiver and getattr(transceiver, "sender", None):
+                        await transceiver.sender.replaceTrack(outbound_video)
+                        bound_method = "transceiver.replaceTrack"
+                        stage("outbound_video_sender_bound_existing")
+                        if state_ref is not None:
+                            state_ref.outbound_sender_mid = getattr(transceiver.sender, "mid", None)
+                    else:
+                        pc.addTrack(outbound_video)
+                        bound_method = "pc.addTrack"
+                        stage("outbound_video_sender_added_fallback")
+                except Exception as bind_exc:
+                    stage(f"outbound_video_sender_bind_failed: {bind_exc}", level="error")
+                    logger.error(f"Failed to bind outbound video sender: {bind_exc}")
+                    if state_ref is not None:
+                        state_ref.last_disconnect_reason = f"video_sender_bind_failed:{bind_exc}"
+                    return
+                finally:
+                    if state_ref is not None:
+                        try:
+                            state_ref.outbound_bind_method = bound_method
+                            state_ref.outbound_sender_bind_ts = time.time()
+                        except Exception:
+                            pass
+
+                if state_ref is not None:
+                    try:
+                        state_ref.outbound_video = outbound_video
+                    except Exception:
+                        pass
+
+            asyncio.create_task(_bind_outbound_sender())
+            if state_ref is not None:
+                try:
+                    state_ref.received_video = True
+                except Exception:
+                    pass
         elif track.kind == "audio":
             local_a = IncomingAudioTrack(track)
             try:
                 pc.addTrack(local_a)
                 logger.info("Loopback processed audio track added")
+                try:
+                    if _peer_state is not None:
+                        _peer_state.received_audio = True
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"audio addTrack error: {e}")
 
@@ -1188,6 +1282,20 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         stage("remote_description_set")
     except Exception as e:
         stage(f"remote_description_failed: {e}", level="error")
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        if _peer_state is not None and getattr(_peer_state, 'pc', None) == pc:
+            try:
+                _peer_state.last_disconnect_reason = f"remote_description_failed:{e}"
+            except Exception:
+                pass
+            _last_peer_snapshot = {
+                "event": "remote_description_failed",
+                "error": str(e),
+            }
+            _peer_state = None
         raise HTTPException(status_code=400, detail=f"Invalid SDP offer: {e}")
 
     # Create answer with error surfacing
@@ -1196,6 +1304,20 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         stage("answer_created")
     except Exception as e:
         stage(f"createAnswer_failed: {e}", level="error")
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        if _peer_state is not None and getattr(_peer_state, 'pc', None) == pc:
+            try:
+                _peer_state.last_disconnect_reason = f"createAnswer_failed:{e}"
+            except Exception:
+                pass
+            _last_peer_snapshot = {
+                "event": "createAnswer_failed",
+                "error": str(e),
+            }
+            _peer_state = None
         raise HTTPException(status_code=500, detail=f"createAnswer: {e}")
     # Avoid SDP munging to reduce negotiation fragility
     try:
@@ -1209,12 +1331,21 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
         stage("local_description_set")
     except Exception as e:
         stage(f"setLocalDescription_failed: {e}", level="error")
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        if _peer_state is not None and getattr(_peer_state, 'pc', None) == pc:
+            try:
+                _peer_state.last_disconnect_reason = f"setLocalDescription_failed:{e}"
+            except Exception:
+                pass
+            _last_peer_snapshot = {
+                "event": "setLocalDescription_failed",
+                "error": str(e),
+            }
+            _peer_state = None
         raise HTTPException(status_code=500, detail=f"setLocalDescription: {e}")
-
-    _peer_state = PeerState(pc=pc, created=time.time(), outbound_video=outbound_video)
-
-    # Initialize ice_samples list
-    _peer_state.ice_samples = []
 
     async def _sample_ice_loop(state_ref: PeerState):  # pragma: no cover diagnostic
         try:
@@ -1341,7 +1472,7 @@ async def frame_counter():
     try:
         st = _peer_state
         if st is None:
-            return {"active": False}
+            return {"active": False, "last": _last_peer_snapshot}
         pc = st.pc
         # Find outbound track
         ov = None
@@ -1364,6 +1495,21 @@ async def frame_counter():
                 luma_avg = float(_np.mean(samples))
         except Exception:
             luma_avg = None
+        peer_meta = {
+            "connection_state": getattr(st.pc, 'connectionState', None),
+            "ice_state": getattr(st.pc, 'iceConnectionState', None),
+            "received_video": getattr(st, 'received_video', False),
+            "received_audio": getattr(st, 'received_audio', False),
+            "incoming_frames": getattr(st, 'incoming_frames', 0),
+            "incoming_first_frame_ts": getattr(st, 'incoming_first_frame_ts', None),
+            "control_channel_ready": getattr(st, 'control_channel_ready', False),
+            "last_connection_state": getattr(st, 'last_connection_state', None),
+            "last_ice_state": getattr(st, 'last_ice_state', None),
+            "incoming_track_bound": st.incoming_video_track is not None,
+            "outbound_bind_method": getattr(st, 'outbound_bind_method', None),
+            "outbound_sender_mid": getattr(st, 'outbound_sender_mid', None),
+            "outbound_sender_bind_ts": getattr(st, 'outbound_sender_bind_ts', None),
+        }
         return {
             "active": True,
             "frames_emitted": getattr(ov, '_frame_count', None),
@@ -1378,6 +1524,7 @@ async def frame_counter():
             "source_bound": getattr(ov, '_source', None) is not None,
             "bound_at": getattr(ov, '_bound_at', None),
             "first_relay_ts": getattr(ov, '_first_relay_ts', None),
+            "peer": peer_meta,
         }
     except Exception as e:
         return {"active": False, "error": str(e)}
