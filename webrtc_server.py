@@ -1118,12 +1118,15 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
             except Exception as e:
                 logger.error(f"audio addTrack error: {e}")
 
-    # Add outbound video to ensure the answer includes a send m-line
+    # Ensure we both SEND avatar video and RECEIVE client camera by using a transceiver with sendrecv direction.
+    # Prior implementation used addTrack (sendonly) which prevented inbound video track reception on some browsers,
+    # leading to perpetual placeholder frames / black output. This explicit transceiver resolves that.
     try:
-        sender = pc.addTrack(outbound_video)
-        stage("outbound_video_added")
+        video_trans = pc.addTransceiver('video', direction='sendrecv')
+        await video_trans.sender.replaceTrack(outbound_video)
+        stage("outbound_video_transceiver_added")
         try:
-            params = sender.getParameters()
+            params = video_trans.sender.getParameters()
             if params and hasattr(params, 'encodings'):
                 if not params.encodings:
                     params.encodings = [{}]
@@ -1131,12 +1134,25 @@ async def webrtc_offer(offer: Dict[str, Any], x_api_key: Optional[str] = Header(
                     enc['maxBitrate'] = min(enc.get('maxBitrate', 300_000), 300_000)
                     enc.setdefault('scaleResolutionDownBy', 2.0)
                     enc.setdefault('degradationPreference', 'maintain-resolution')
-            sender.setParameters(params)
+            video_trans.sender.setParameters(params)
         except Exception:
             pass
     except Exception as e:
-        stage(f"outbound_video_add_failed: {e}", level="error")
-        raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e}")
+        stage(f"outbound_video_transceiver_failed: {e}", level="warning")
+        # Fallback to legacy addTrack path
+        try:
+            sender = pc.addTrack(outbound_video)
+            stage("outbound_video_added_fallback")
+        except Exception as e2:
+            stage(f"outbound_video_add_failed: {e2}", level="error")
+            raise HTTPException(status_code=500, detail=f"outbound_video_setup: {e2}")
+
+    # Proactively create an audio transceiver (recvonly) so inbound audio is not blocked by lack of direction
+    try:
+        pc.addTransceiver('audio', direction='recvonly')
+        stage("audio_transceiver_added")
+    except Exception as e:
+        stage(f"audio_transceiver_failed: {e}", level='warning')
 
     # Now apply the remote description (offer)
     try:
