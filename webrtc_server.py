@@ -139,6 +139,7 @@ METERED_API_KEY = os.getenv("MIRAGE_METERED_API_KEY")
 TURN_TLS_ONLY = os.getenv("MIRAGE_TURN_TLS_ONLY", "1").strip().lower() in {"1","true","yes","on"}
 PREFER_H264 = os.getenv("MIRAGE_PREFER_H264", "0").strip().lower() in {"1","true","yes","on"}
 FORCE_RELAY = os.getenv("MIRAGE_FORCE_RELAY", "0").strip().lower() in {"1","true","yes","on"}
+DISABLE_METERED = os.getenv("MIRAGE_DISABLE_METERED", "0").strip().lower() in {"1","true","yes","on"}
 
 
 def _b64u(data: bytes) -> str:
@@ -353,9 +354,11 @@ def _ice_configuration() -> RTCConfiguration:
     Includes a 5-second timeout for the metered fetch.
     """
     servers = []
+    static_turn_available = bool(TURN_URL and TURN_USER and TURN_PASS)
+    use_metered = bool(METERED_API_KEY) and not DISABLE_METERED and not static_turn_available
     
     # 1. Try Metered Service (e.g., Twilio) with a timeout
-    if METERED_API_KEY:
+    if use_metered:
         try:
             import httpx
             logger.info("Fetching metered ICE servers...")
@@ -382,9 +385,13 @@ def _ice_configuration() -> RTCConfiguration:
                 logger.warning(f"Metered ICE DNS lookup failed: {dns_err}. Verify outbound DNS/HTTPS access from the container or disable MIRAGE_METERED_API_KEY.")
             except Exception:
                 pass
+    elif METERED_API_KEY and DISABLE_METERED:
+        logger.info("Metered ICE fetch disabled via MIRAGE_DISABLE_METERED=1")
+    elif METERED_API_KEY and static_turn_available:
+        logger.info("Skipping metered ICE fetch because static TURN credentials are configured")
 
     # 2. Fallback to static TURN if metered fetch failed or wasn't configured
-    if not any('turn:' in s.urls for s in servers) and TURN_URL and TURN_USER and TURN_PASS:
+    if not any('turn:' in s.urls for s in servers) and static_turn_available:
         logger.info("No metered TURN servers loaded, adding static TURN configuration.")
         servers.append(
             RTCIceServer(
